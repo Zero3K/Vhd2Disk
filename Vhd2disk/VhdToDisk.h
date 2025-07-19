@@ -55,6 +55,16 @@ typedef struct
 } VHD_DYNAMIC;
 
 
+// Helper function to convert partition type to readable string
+const WCHAR* GetPartitionTypeName(BYTE partitionType);
+
+// Helper function to format size in human readable format
+void FormatSizeString(WCHAR* buffer, UINT64 sizeInSectors);
+
+// Helper function to calculate filesystem usage (Used/Free space)
+BOOL GetPartitionUsage(HANDLE hDrive, UINT32 startLBA, UINT32 sizeSectors, BYTE partitionType, 
+					   WCHAR* usedStr, WCHAR* freeStr);
+
 class CVhdToDisk
 {
 	VHD_FOOTER	m_Foot;
