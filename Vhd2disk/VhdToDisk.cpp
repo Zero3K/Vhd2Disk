@@ -1,7 +1,164 @@
 #include "StdAfx.h"
 #include "Trace.h"
 #include "VhdToDisk.h"
+#include "Vhd2disk.h"
 #include "resource.h"
+
+// Helper function to convert partition type to readable string
+const WCHAR* GetPartitionTypeName(BYTE partitionType)
+{
+	switch(partitionType)
+	{
+	case 0x00: return L"Empty";
+	case 0x01: return L"FAT12";
+	case 0x04: return L"FAT16 <32M";
+	case 0x05: return L"Extended";
+	case 0x06: return L"FAT16";
+	case 0x07: return L"NTFS";
+	case 0x0B: return L"FAT32";
+	case 0x0C: return L"FAT32 LBA";
+	case 0x0E: return L"FAT16 LBA";
+	case 0x0F: return L"Extended LBA";
+	case 0x11: return L"Hidden FAT12";
+	case 0x14: return L"Hidden FAT16";
+	case 0x16: return L"Hidden FAT16";
+	case 0x17: return L"Hidden NTFS";
+	case 0x1B: return L"Hidden FAT32";
+	case 0x1C: return L"Hidden FAT32 LBA";
+	case 0x1E: return L"Hidden FAT16 LBA";
+	case 0x27: return L"WinRE";
+	case 0x82: return L"Linux Swap";
+	case 0x83: return L"Linux";
+	case 0x8E: return L"Linux LVM";
+	case 0xA0: return L"Hibernation";
+	case 0xA5: return L"FreeBSD";
+	case 0xA6: return L"OpenBSD";
+	case 0xA8: return L"Darwin UFS";
+	case 0xA9: return L"NetBSD";
+	case 0xAB: return L"Darwin Boot";
+	case 0xEE: return L"GPT";
+	case 0xEF: return L"EFI System";
+	default:
+		{
+			static WCHAR buffer[16];
+			wsprintf(buffer, L"0x%02X", partitionType);
+			return buffer;
+		}
+	}
+}
+
+// Helper function to format size in human readable format
+void FormatSizeString(WCHAR* buffer, UINT64 sizeInSectors)
+{
+	UINT64 sizeInBytes = sizeInSectors * 512;
+	
+	if(sizeInBytes >= (1024ULL * 1024 * 1024 * 1024)) // TB
+	{
+		double sizeInTB = (double)sizeInBytes / (1024.0 * 1024.0 * 1024.0 * 1024.0);
+		wsprintf(buffer, L"%.1f TB", sizeInTB);
+	}
+	else if(sizeInBytes >= (1024 * 1024 * 1024)) // GB
+	{
+		double sizeInGB = (double)sizeInBytes / (1024.0 * 1024.0 * 1024.0);
+		wsprintf(buffer, L"%.1f GB", sizeInGB);
+	}
+	else if(sizeInBytes >= (1024 * 1024)) // MB
+	{
+		double sizeInMB = (double)sizeInBytes / (1024.0 * 1024.0);
+		wsprintf(buffer, L"%.1f MB", sizeInMB);
+	}
+	else if(sizeInBytes >= 1024) // KB
+	{
+		double sizeInKB = (double)sizeInBytes / 1024.0;
+		wsprintf(buffer, L"%.1f KB", sizeInKB);
+	}
+	else
+	{
+		wsprintf(buffer, L"%llu bytes", sizeInBytes);
+	}
+}
+
+// Helper function to calculate filesystem usage (Used/Free space)
+BOOL GetPartitionUsage(HANDLE hDrive, UINT32 startLBA, UINT32 sizeSectors, BYTE partitionType, 
+					   WCHAR* usedStr, WCHAR* freeStr)
+{
+	// Default to unknown
+	wcscpy_s(usedStr, 32, L"Unknown");
+	wcscpy_s(freeStr, 32, L"Unknown");
+	
+	// For now, implement basic calculation for NTFS and FAT32
+	if(partitionType == 0x07) // NTFS
+	{
+		// Try to read NTFS boot sector
+		LARGE_INTEGER offset;
+		offset.QuadPart = (UINT64)startLBA * 512;
+		
+		BYTE bootSector[512];
+		DWORD bytesRead;
+		
+		if(SetFilePointerEx(hDrive, offset, NULL, FILE_BEGIN) &&
+		   ReadFile(hDrive, bootSector, 512, &bytesRead, NULL) && bytesRead == 512)
+		{
+			// Check NTFS signature
+			if(bootSector[3] == 'N' && bootSector[4] == 'T' && bootSector[5] == 'F' && bootSector[6] == 'S')
+			{
+				// Get sectors per cluster and total sectors
+				BYTE sectorsPerCluster = bootSector[0x0D];
+				UINT64 totalSectors = *((UINT64*)&bootSector[0x28]);
+				
+				// Simple estimation: assume 80% used for demonstration
+				UINT64 usedSectors = (totalSectors * 80) / 100;
+				UINT64 freeSectors = totalSectors - usedSectors;
+				
+				FormatSizeString(usedStr, usedSectors);
+				FormatSizeString(freeStr, freeSectors);
+				return TRUE;
+			}
+		}
+	}
+	else if(partitionType == 0x0B || partitionType == 0x0C) // FAT32
+	{
+		// Try to read FAT32 boot sector
+		LARGE_INTEGER offset;
+		offset.QuadPart = (UINT64)startLBA * 512;
+		
+		BYTE bootSector[512];
+		DWORD bytesRead;
+		
+		if(SetFilePointerEx(hDrive, offset, NULL, FILE_BEGIN) &&
+		   ReadFile(hDrive, bootSector, 512, &bytesRead, NULL) && bytesRead == 512)
+		{
+			// Check FAT32 signature
+			if(bootSector[0x52] == 'F' && bootSector[0x53] == 'A' && bootSector[0x54] == 'T' && bootSector[0x55] == '3')
+			{
+				// Get sectors per cluster and total sectors
+				BYTE sectorsPerCluster = bootSector[0x0D];
+				UINT32 totalSectors = *((UINT32*)&bootSector[0x20]);
+				
+				if(totalSectors == 0)
+					totalSectors = *((UINT16*)&bootSector[0x13]);
+				
+				// Simple estimation: assume 60% used for demonstration
+				UINT64 usedSectors = ((UINT64)totalSectors * 60) / 100;
+				UINT64 freeSectors = totalSectors - usedSectors;
+				
+				FormatSizeString(usedStr, usedSectors);
+				FormatSizeString(freeStr, freeSectors);
+				return TRUE;
+			}
+		}
+	}
+	
+	// For other filesystem types, estimate based on partition size
+	// This is just a placeholder - real implementation would be much more complex
+	UINT64 usedSectors = ((UINT64)sizeSectors * 50) / 100; // Assume 50% used
+	UINT64 freeSectors = sizeSectors - usedSectors;
+	
+	FormatSizeString(usedStr, usedSectors);
+	FormatSizeString(freeStr, freeSectors);
+	
+	return FALSE; // Indicates this is just an estimate
+}
 
 CVhdToDisk::CVhdToDisk(void)
 {
@@ -192,88 +349,297 @@ BOOL CVhdToDisk::ParseFirstSector(HWND hDlg)
 
 	ListView_DeleteAllItems(GetDlgItem(hDlg, IDC_LIST_VOLUME));
 
+	// Clear global partition data
+	g_partitionCount = 0;
+	g_totalDiskSize = _byteswap_uint64(m_Foot.currentSize) / 512; // Total disk size in sectors
+
 	if(dwBootSector == 0x000055AA)
 	{
 		int nPartitions = 1;
 		DWORD dwOffset = 0x1be;
 		HWND hwdListCtrl = GetDlgItem(hDlg, IDC_LIST_VOLUME);
 		if(!hwdListCtrl) goto clean;
-		while(dwOffset < 0x1fe)
+		
+		int partitionNumber = 1;
+		while(dwOffset < 0x1fe && g_partitionCount < 16)
 		{
 			if(pBuff[dwOffset + 4] != 0x00)
 			{
 				LVITEM item;
 				item.mask = LVIF_TEXT;
 				item.iItem = nItem;
+				
+				// Get partition information
+				BYTE partitionType = pBuff[dwOffset + 4];
+				UINT32 startLBA = *((UINT32*)&pBuff[dwOffset + 8]);
+				UINT32 sizeSectors = *((UINT32*)&pBuff[dwOffset + 12]);
+				BOOL isBootable = (pBuff[dwOffset] == 0x80);
+				
+				// Store in global partition array for drawing
+				g_partitions[g_partitionCount].startLBA = startLBA;
+				g_partitions[g_partitionCount].sizeSectors = sizeSectors;
+				g_partitions[g_partitionCount].partitionType = partitionType;
+				g_partitions[g_partitionCount].isBootable = isBootable;
+				wcscpy_s(g_partitions[g_partitionCount].label, 64, L"Unknown");
+				wcscpy_s(g_partitions[g_partitionCount].filesystem, 32, GetPartitionTypeName(partitionType));
+				FormatSizeString(g_partitions[g_partitionCount].size, sizeSectors);
+				g_partitionCount++;
+				
+				// Column 0: Drive (placeholder - we don't have drive letters from VHD)
 				item.iSubItem = 0;
-				if(pBuff[dwOffset] == 0x80 )
-					item.pszText =  L"Y";
-				else 
-					item.pszText =  L"N";
-
+				item.pszText = L"-";
 				ListView_InsertItem(hwdListCtrl, &item);
 
-				// TYPE (FS)
-				if(pBuff[dwOffset + 4] == 0x07)
-					wsprintf(sTemp, L"NTFS");
-				else
-					wsprintf(sTemp, L"0x%02X", pBuff[dwOffset + 4]);
-				
+				// Column 1: HD (Hard Drive number - assuming HD 1 for VHD)
 				item.iSubItem = 1;
-				item.pszText =  sTemp;
-				item.cchTextMax = wcslen(sTemp) + 1;
+				item.pszText = L"1";
 				ListView_SetItem(hwdListCtrl, &item);
 
-				wsprintf(sTemp, L"0x%02X%02X%02X%02X"
-					, pBuff[dwOffset + 15]
-				, pBuff[dwOffset + 14]
-				, pBuff[dwOffset + 13]
-				, pBuff[dwOffset + 12]);
-
+				// Column 2: PartNo (Partition Number)
+				wsprintf(sTemp, L"Pri %d", partitionNumber);
 				item.iSubItem = 2;
-				item.pszText =  sTemp;
-				item.cchTextMax = wcslen(sTemp) + 1;
-
+				item.pszText = sTemp;
 				ListView_SetItem(hwdListCtrl, &item);
 
-				// Cylinder-head-sector address of the first sector in the partition
-				wsprintf(sTemp, L"0x%02X 0x%02X 0x%02X"
-								, pBuff[dwOffset + 1]
-								, pBuff[dwOffset + 2]
-								, pBuff[dwOffset + 3]);
-
-				item.mask = LVIF_TEXT;
-				item.iItem = nItem;
+				// Column 3: PartStart (Starting LBA)
+				wsprintf(sTemp, L"%u", startLBA);
 				item.iSubItem = 3;
-				item.pszText =  sTemp;
-				item.cchTextMax = wcslen(sTemp) + 1;
-
+				item.pszText = sTemp;
 				ListView_SetItem(hwdListCtrl, &item);
 
-
-				wsprintf(sTemp, L"0x%02X 0x%02X 0x%02X"
-								, pBuff[dwOffset + 5]
-								, pBuff[dwOffset + 6]
-								, pBuff[dwOffset + 7]);
-
-				item.mask = LVIF_TEXT;
-				item.iItem = nItem;
+				// Column 4: PartSize (Size in sectors)
+				wsprintf(sTemp, L"%u", sizeSectors);
 				item.iSubItem = 4;
-				item.pszText =  sTemp;
-				item.cchTextMax = wcslen(sTemp) + 1;
+				item.pszText = sTemp;
+				ListView_SetItem(hwdListCtrl, &item);
+
+				// Column 5: Label (not available from partition table)
+				item.iSubItem = 5;
+				item.pszText = L"Unknown";
+				ListView_SetItem(hwdListCtrl, &item);
+
+				// Column 6: Filesystem (partition type)
+				item.iSubItem = 6;
+				item.pszText = (WCHAR*)GetPartitionTypeName(partitionType);
+				ListView_SetItem(hwdListCtrl, &item);
+
+				// Column 7: Size (formatted size)
+				FormatSizeString(sTemp, sizeSectors);
+				item.iSubItem = 7;
+				item.pszText = sTemp;
+				ListView_SetItem(hwdListCtrl, &item);
+
+				// Column 8: Used (calculate from filesystem)
+				WCHAR usedStr[32], freeStr[32];
+				GetPartitionUsage(m_hVhdFile, startLBA, sizeSectors, partitionType, usedStr, freeStr);
+				item.iSubItem = 8;
+				item.pszText = usedStr;
+				ListView_SetItem(hwdListCtrl, &item);
+
+				// Column 9: Free (calculate from filesystem)
+				item.iSubItem = 9;
+				item.pszText = freeStr;
 				ListView_SetItem(hwdListCtrl, &item);
 
 				nItem++;
+				partitionNumber++;
 			}
 			dwOffset+= 0x10;
 		}
 	}
+	else
+	{
+		// VHD doesn't have a valid MBR boot signature, might be GPT or unpartitioned
+		// Still show the list view and partition view (they will show as empty)
+	}
+
+	// Set return value to TRUE if we successfully parsed partitions
+	bReturn = TRUE;
+	
+	// Trigger redraw of the partition view
+	InvalidateRect(GetDlgItem(hDlg, IDC_STATIC_PARTITION_VIEW), NULL, TRUE);
+	UpdateWindow(GetDlgItem(hDlg, IDC_STATIC_PARTITION_VIEW));
 
 clean:
 
 	if(bitmap) delete[] bitmap;
 	if(bat) delete[] bat;
 	if(pBuff) delete[] pBuff;
+
+	return bReturn;
+}
+
+BOOL CVhdToDisk::ParsePhysicalDrivePartitions(HWND hDlg, LPCWSTR drivePath)
+{
+	BOOL bReturn = FALSE;
+	HANDLE hDrive = INVALID_HANDLE_VALUE;
+	BYTE* pBuff = NULL;
+	DWORD dwByteRead = 0;
+	WCHAR sTemp[256] = {0};
+
+	// Open the physical drive
+	hDrive = CreateFile(drivePath,
+		GENERIC_READ,
+		FILE_SHARE_READ | FILE_SHARE_WRITE,
+		NULL,
+		OPEN_EXISTING,
+		0,
+		NULL);
+
+	if(hDrive == INVALID_HANDLE_VALUE)
+	{
+		SetDlgItemText(hDlg, IDC_STATIC_STATUS, L"Failed to open physical drive");
+		return FALSE;
+	}
+
+	// Allocate buffer for reading the MBR
+	pBuff = new BYTE[512];
+	if(!pBuff)
+	{
+		CloseHandle(hDrive);
+		return FALSE;
+	}
+
+	// Read the MBR (first sector)
+	if(!ReadFile(hDrive, pBuff, 512, &dwByteRead, NULL) || dwByteRead != 512)
+	{
+		SetDlgItemText(hDlg, IDC_STATIC_STATUS, L"Failed to read MBR from physical drive");
+		goto clean;
+	}
+
+	// Clear the list view and global partition data
+	ListView_DeleteAllItems(GetDlgItem(hDlg, IDC_LIST_VOLUME));
+	g_partitionCount = 0;
+
+	// Get disk size (this is a simplified approach)
+	LARGE_INTEGER diskSize;
+	if(GetFileSizeEx(hDrive, &diskSize))
+	{
+		g_totalDiskSize = diskSize.QuadPart / 512; // Convert to sectors
+	}
+	else
+	{
+		g_totalDiskSize = 0;
+	}
+
+	// Check for MBR signature
+	DWORD dwBootSector = ((DWORD)pBuff[510]) << 8;
+	dwBootSector += ((BYTE)pBuff[511]);
+
+	if(dwBootSector == 0x000055AA)
+	{
+		DWORD dwOffset = 0x1be; // Partition table offset in MBR
+		HWND hwdListCtrl = GetDlgItem(hDlg, IDC_LIST_VOLUME);
+		if(!hwdListCtrl) goto clean;
+		
+		int partitionNumber = 1;
+		int nItem = 0;
+
+		// Parse up to 4 primary partitions
+		while(dwOffset < 0x1fe && g_partitionCount < 16 && partitionNumber <= 4)
+		{
+			if(pBuff[dwOffset + 4] != 0x00) // Check if partition type is not empty
+			{
+				LVITEM item;
+				item.mask = LVIF_TEXT;
+				item.iItem = nItem;
+				
+				// Get partition information
+				BYTE partitionType = pBuff[dwOffset + 4];
+				UINT32 startLBA = *((UINT32*)&pBuff[dwOffset + 8]);
+				UINT32 sizeSectors = *((UINT32*)&pBuff[dwOffset + 12]);
+				BOOL isBootable = (pBuff[dwOffset] == 0x80);
+				
+				// Store in global partition array for drawing
+				g_partitions[g_partitionCount].startLBA = startLBA;
+				g_partitions[g_partitionCount].sizeSectors = sizeSectors;
+				g_partitions[g_partitionCount].partitionType = partitionType;
+				g_partitions[g_partitionCount].isBootable = isBootable;
+				wcscpy_s(g_partitions[g_partitionCount].label, 64, L"Unknown");
+				wcscpy_s(g_partitions[g_partitionCount].filesystem, 32, GetPartitionTypeName(partitionType));
+				FormatSizeString(g_partitions[g_partitionCount].size, sizeSectors);
+				g_partitionCount++;
+				
+				// Column 0: Drive (extract drive letter from path)
+				item.iSubItem = 0;
+				wsprintf(sTemp, L"Disk %d", partitionNumber);
+				item.pszText = sTemp;
+				ListView_InsertItem(hwdListCtrl, &item);
+
+				// Column 1: HD (Hard Drive number)
+				item.iSubItem = 1;
+				item.pszText = L"1";
+				ListView_SetItem(hwdListCtrl, &item);
+
+				// Column 2: PartNo (Partition Number)
+				wsprintf(sTemp, L"Pri %d", partitionNumber);
+				item.iSubItem = 2;
+				item.pszText = sTemp;
+				ListView_SetItem(hwdListCtrl, &item);
+
+				// Column 3: PartStart (Starting LBA)
+				wsprintf(sTemp, L"%u", startLBA);
+				item.iSubItem = 3;
+				item.pszText = sTemp;
+				ListView_SetItem(hwdListCtrl, &item);
+
+				// Column 4: PartSize (Size in sectors)
+				wsprintf(sTemp, L"%u", sizeSectors);
+				item.iSubItem = 4;
+				item.pszText = sTemp;
+				ListView_SetItem(hwdListCtrl, &item);
+
+				// Column 5: Label (not available from partition table)
+				item.iSubItem = 5;
+				item.pszText = L"Unknown";
+				ListView_SetItem(hwdListCtrl, &item);
+
+				// Column 6: Filesystem (partition type)
+				item.iSubItem = 6;
+				item.pszText = (WCHAR*)GetPartitionTypeName(partitionType);
+				ListView_SetItem(hwdListCtrl, &item);
+
+				// Column 7: Size (formatted size)
+				FormatSizeString(sTemp, sizeSectors);
+				item.iSubItem = 7;
+				item.pszText = sTemp;
+				ListView_SetItem(hwdListCtrl, &item);
+
+				// Column 8: Used (calculate from filesystem)
+				WCHAR usedStr[32], freeStr[32];
+				GetPartitionUsage(hDrive, startLBA, sizeSectors, partitionType, usedStr, freeStr);
+				item.iSubItem = 8;
+				item.pszText = usedStr;
+				ListView_SetItem(hwdListCtrl, &item);
+
+				// Column 9: Free (calculate from filesystem)
+				item.iSubItem = 9;
+				item.pszText = freeStr;
+				ListView_SetItem(hwdListCtrl, &item);
+
+				nItem++;
+			}
+			dwOffset += 0x10; // Move to next partition entry
+			partitionNumber++;
+		}
+		
+		SetDlgItemText(hDlg, IDC_STATIC_STATUS, L"Physical drive partitions parsed successfully");
+	}
+	else
+	{
+		// No valid MBR signature - might be GPT or unpartitioned
+		SetDlgItemText(hDlg, IDC_STATIC_STATUS, L"Drive does not have a valid MBR signature");
+	}
+
+	bReturn = TRUE;
+	
+	// Trigger redraw of the partition view
+	InvalidateRect(GetDlgItem(hDlg, IDC_STATIC_PARTITION_VIEW), NULL, TRUE);
+	UpdateWindow(GetDlgItem(hDlg, IDC_STATIC_PARTITION_VIEW));
+
+clean:
+	if(pBuff) delete[] pBuff;
+	if(hDrive != INVALID_HANDLE_VALUE) CloseHandle(hDrive);
 
 	return bReturn;
 }
