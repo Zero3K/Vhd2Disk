@@ -22,6 +22,12 @@
 #define IDC_STATIC_NAME                 1008
 #define IDC_LIST1                       1009
 #define IDC_LIST_VOLUME                 1009
+#define IDC_RADIO_VHD_TO_DISK           1010
+#define IDC_RADIO_DISK_TO_VHD           1011
+#define IDC_EDIT_VHD_SAVE_FILE          1012
+#define IDC_BUTTON_BROWSE_VHD_SAVE      1013
+#define IDC_STATIC_VHD_SAVE             1014
+#define IDC_STATIC_VHD_LOAD             1015
 #define IDC_STATIC                      -1
 
 // Next default values for new objects
@@ -31,7 +37,7 @@
 #define _APS_NO_MFC                     1
 #define _APS_NEXT_RESOURCE_VALUE        133
 #define _APS_NEXT_COMMAND_VALUE         32771
-#define _APS_NEXT_CONTROL_VALUE         1010
+#define _APS_NEXT_CONTROL_VALUE         1016
 #define _APS_NEXT_SYMED_VALUE           110
 #endif
 #endif

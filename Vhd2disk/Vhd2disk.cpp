@@ -1,9 +1,10 @@
-// Vhd2disk.cpp : définit le point d'entrée pour l'application.
+// Vhd2disk.cppï¿½: dï¿½finit le point d'entrï¿½e pour l'application.
 //
 
 #include "stdafx.h"
 #include "Vhd2disk.h"
 #include "VhdToDisk.h"
+#include "DiskToVhd.h"
 #include "URLCtrl.h"
 
 
@@ -12,6 +13,7 @@ typedef struct _DUMPTHRDSTRUCT
 	HWND hDlg;
 	WCHAR sVhdPath[MAX_PATH];
 	WCHAR sDrive[64];
+	BOOL bVhdToDisk; // TRUE for VHD->Disk, FALSE for Disk->VHD
 }DUMPTHRDSTRUCT;
 
 LRESULT CALLBACK MainDlgProc( HWND hDlg, UINT Msg, WPARAM wParam, LPARAM lParam );
@@ -22,6 +24,7 @@ HWND m_hDlg = NULL;
 HICON hIcon = NULL;
 HANDLE hDumpThread = NULL;
 CVhdToDisk* pVhd2disk = NULL;
+CDiskToVhd* pDisk2vhd = NULL;
 DUMPTHRDSTRUCT dmpstruct;
 
 
@@ -52,6 +55,22 @@ BOOL DoFileDialog(LPWSTR lpszFilename, LPWSTR lpzFilter, LPWSTR lpzExtension)
 	return GetOpenFileName(&ofn); 
 } 
 
+BOOL DoSaveFileDialog(LPWSTR lpszFilename, LPWSTR lpzFilter, LPWSTR lpzExtension) 
+{ 
+	OPENFILENAME ofn; 
+
+	ZeroMemory(&ofn, sizeof(ofn));
+	ofn.lStructSize = sizeof(ofn); 
+	ofn.lpstrFile = lpszFilename; 
+	ofn.nMaxFile = MAX_PATH; 
+	ofn.lpstrFilter = lpzFilter;
+	ofn.lpstrDefExt = lpzExtension;
+	ofn.Flags = OFN_OVERWRITEPROMPT|OFN_PATHMUSTEXIST|OFN_ENABLEHOOK|OFN_EXPLORER; 
+	ofn.lpfnHook = (LPOFNHOOKPROC)OFNHookProc; 
+
+	return GetSaveFileName(&ofn); 
+} 
+
 void PopulatePhysicalDriveComboBox(HWND hDlg)
 {
 	HANDLE hFile = NULL;
@@ -76,6 +95,33 @@ void PopulatePhysicalDriveComboBox(HWND hDlg)
 			CloseHandle(hFile);
 			SendMessage(hCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(sPhysicalDrive));
 		}
+	}
+}
+
+void UpdateUIMode(HWND hDlg, BOOL bVhdToDisk)
+{
+	// Show/hide controls based on operation mode
+	if(bVhdToDisk)
+	{
+		// VHD to Disk mode
+		ShowWindow(GetDlgItem(hDlg, IDC_EDIT_VHD_FILE), SW_SHOW);
+		ShowWindow(GetDlgItem(hDlg, IDC_BUTTON_BROWSE_VHD), SW_SHOW);
+		ShowWindow(GetDlgItem(hDlg, IDC_STATIC_VHD_LOAD), SW_SHOW);
+		
+		ShowWindow(GetDlgItem(hDlg, IDC_EDIT_VHD_SAVE_FILE), SW_HIDE);
+		ShowWindow(GetDlgItem(hDlg, IDC_BUTTON_BROWSE_VHD_SAVE), SW_HIDE);
+		ShowWindow(GetDlgItem(hDlg, IDC_STATIC_VHD_SAVE), SW_HIDE);
+	}
+	else
+	{
+		// Disk to VHD mode
+		ShowWindow(GetDlgItem(hDlg, IDC_EDIT_VHD_FILE), SW_HIDE);
+		ShowWindow(GetDlgItem(hDlg, IDC_BUTTON_BROWSE_VHD), SW_HIDE);
+		ShowWindow(GetDlgItem(hDlg, IDC_STATIC_VHD_LOAD), SW_HIDE);
+		
+		ShowWindow(GetDlgItem(hDlg, IDC_EDIT_VHD_SAVE_FILE), SW_SHOW);
+		ShowWindow(GetDlgItem(hDlg, IDC_BUTTON_BROWSE_VHD_SAVE), SW_SHOW);
+		ShowWindow(GetDlgItem(hDlg, IDC_STATIC_VHD_SAVE), SW_SHOW);
 	}
 }
 
@@ -131,10 +177,25 @@ DWORD WINAPI DumpThread(LPVOID lpVoid)
 {
 	DUMPTHRDSTRUCT* pDumpStruct = (DUMPTHRDSTRUCT*)lpVoid;
 	
-	if(pVhd2disk->DumpVhdToDisk(pDumpStruct->sVhdPath, pDumpStruct->sDrive, pDumpStruct->hDlg))
-		SendMessage(pDumpStruct->hDlg, MYWM_UPDATE_STATUS, (WPARAM)L"VHD dumped on drive successfully!", 1);
+	if(pDumpStruct->bVhdToDisk)
+	{
+		// VHD to Disk conversion
+		if(pVhd2disk->DumpVhdToDisk(pDumpStruct->sVhdPath, pDumpStruct->sDrive, pDumpStruct->hDlg))
+			SendMessage(pDumpStruct->hDlg, MYWM_UPDATE_STATUS, (WPARAM)L"VHD dumped to drive successfully!", 1);
+		else
+			SendMessage(pDumpStruct->hDlg, MYWM_UPDATE_STATUS, (WPARAM)L"Failed to dump the VHD to drive!", 1);
+	}
 	else
-		SendMessage(pDumpStruct->hDlg, MYWM_UPDATE_STATUS, (WPARAM)L"Failed to dump the VHD on drive!", 1);
+	{
+		// Disk to VHD conversion
+		if(!pDisk2vhd)
+			pDisk2vhd = new CDiskToVhd();
+			
+		if(pDisk2vhd && pDisk2vhd->DumpDiskToVhd(pDumpStruct->sDrive, pDumpStruct->sVhdPath, pDumpStruct->hDlg))
+			SendMessage(pDumpStruct->hDlg, MYWM_UPDATE_STATUS, (WPARAM)L"Disk converted to VHD successfully!", 1);
+		else
+			SendMessage(pDumpStruct->hDlg, MYWM_UPDATE_STATUS, (WPARAM)L"Failed to convert disk to VHD!", 1);
+	}
 
 	return 0;
 }
@@ -163,6 +224,10 @@ LRESULT CALLBACK MainDlgProc( HWND hDlg, UINT Msg, WPARAM wParam, LPARAM lParam 
 
 		AddListHeader(hDlg);
 		
+		// Set default mode to VHD to Disk
+		CheckDlgButton(hDlg, IDC_RADIO_VHD_TO_DISK, BST_CHECKED);
+		UpdateUIMode(hDlg, TRUE);
+		
 		hFont = (HFONT)SendMessage(GetDlgItem(hDlg, IDC_STATIC_NAME), WM_GETFONT, 0, 0);
 		GetObject(hFont, sizeof(LOGFONT), &lf);
 		lf.lfWeight = FW_BOLD;
@@ -178,6 +243,24 @@ LRESULT CALLBACK MainDlgProc( HWND hDlg, UINT Msg, WPARAM wParam, LPARAM lParam 
 	case WM_COMMAND:
 		switch(LOWORD(wParam)) 
 		{
+		case IDC_RADIO_VHD_TO_DISK:
+			UpdateUIMode(hDlg, TRUE);
+			ListView_DeleteAllItems(GetDlgItem(hDlg, IDC_LIST_VOLUME));
+			return TRUE;
+
+		case IDC_RADIO_DISK_TO_VHD:
+			UpdateUIMode(hDlg, FALSE);
+			ListView_DeleteAllItems(GetDlgItem(hDlg, IDC_LIST_VOLUME));
+			return TRUE;
+
+		case IDC_BUTTON_BROWSE_VHD_SAVE:
+			sVhdPath[0] = L'\0';
+			if (DoSaveFileDialog(sVhdPath, L"VHD Files (*.vhd)\0*.vhd\0All Files (*.*)\0*.*\0", L"vhd") == IDOK)
+			{
+				SetDlgItemText(hDlg, IDC_EDIT_VHD_SAVE_FILE, sVhdPath);
+			}
+			return TRUE;
+
 		case IDCANCEL:
 			DWORD dwExit;
 			if(hDumpThread)
@@ -188,6 +271,19 @@ LRESULT CALLBACK MainDlgProc( HWND hDlg, UINT Msg, WPARAM wParam, LPARAM lParam 
 					TerminateThread(hDumpThread, -1);
 				}
 			}
+			
+			// Cleanup objects
+			if(pVhd2disk)
+			{
+				delete pVhd2disk;
+				pVhd2disk = NULL;
+			}
+			if(pDisk2vhd)
+			{
+				delete pDisk2vhd;
+				pDisk2vhd = NULL;
+			}
+			
 			EndDialog(hDlg, LOWORD( wParam ));
 			hDlg = NULL;
 			return TRUE;
@@ -209,11 +305,24 @@ LRESULT CALLBACK MainDlgProc( HWND hDlg, UINT Msg, WPARAM wParam, LPARAM lParam 
 			return TRUE;
 
 		case IDC_BUTTON_START:
-
 			
 			ZeroMemory(&dmpstruct, sizeof(DUMPTHRDSTRUCT));
 			dmpstruct.hDlg = hDlg;
-			GetDlgItemText(hDlg, IDC_EDIT_VHD_FILE, dmpstruct.sVhdPath, MAX_PATH);
+			
+			// Determine operation mode
+			dmpstruct.bVhdToDisk = IsDlgButtonChecked(hDlg, IDC_RADIO_VHD_TO_DISK) == BST_CHECKED;
+			
+			if(dmpstruct.bVhdToDisk)
+			{
+				// VHD to Disk: get VHD file path
+				GetDlgItemText(hDlg, IDC_EDIT_VHD_FILE, dmpstruct.sVhdPath, MAX_PATH);
+			}
+			else
+			{
+				// Disk to VHD: get save VHD path
+				GetDlgItemText(hDlg, IDC_EDIT_VHD_SAVE_FILE, dmpstruct.sVhdPath, MAX_PATH);
+			}
+			
 			if(wcslen(dmpstruct.sVhdPath) < 3) return TRUE;
 
 			nComboIndex = SendMessage(GetDlgItem(hDlg, IDC_COMBO1), CB_GETCURSEL, 0, 0);
@@ -223,15 +332,23 @@ LRESULT CALLBACK MainDlgProc( HWND hDlg, UINT Msg, WPARAM wParam, LPARAM lParam 
 			if(nLen < 8 || nLen > 64) return TRUE;
 			SendMessage(GetDlgItem(hDlg, IDC_COMBO1), CB_GETLBTEXT, nComboIndex, (LPARAM)dmpstruct.sDrive);
 			
-			if(MessageBox(hDlg, L"Are you sure to proceed? This operation will destroy all data present on the target drive", L"Warning!", MB_OKCANCEL) == IDOK)
+			LPCWSTR warningMsg = dmpstruct.bVhdToDisk ? 
+				L"Are you sure to proceed? This operation will destroy all data present on the target drive" :
+				L"Are you sure to proceed? This operation will create a VHD file from the selected drive";
+				
+			if(MessageBox(hDlg, warningMsg, L"Warning!", MB_OKCANCEL) == IDOK)
 			{
 				hDumpThread = CreateThread(NULL, 0, DumpThread, &dmpstruct, 0, &dwThrdID);
 				if(hDumpThread != INVALID_HANDLE_VALUE)
 				{
 					EnableWindow(GetDlgItem(hDlg, IDC_BUTTON_START), FALSE);
 					EnableWindow(GetDlgItem(hDlg, IDC_BUTTON_BROWSE_VHD), FALSE);
+					EnableWindow(GetDlgItem(hDlg, IDC_BUTTON_BROWSE_VHD_SAVE), FALSE);
 					EnableWindow(GetDlgItem(hDlg, IDC_EDIT_VHD_FILE), FALSE);
+					EnableWindow(GetDlgItem(hDlg, IDC_EDIT_VHD_SAVE_FILE), FALSE);
 					EnableWindow(GetDlgItem(hDlg, IDC_COMBO1), FALSE);
+					EnableWindow(GetDlgItem(hDlg, IDC_RADIO_VHD_TO_DISK), FALSE);
+					EnableWindow(GetDlgItem(hDlg, IDC_RADIO_DISK_TO_VHD), FALSE);
 
 					ShowWindow(GetDlgItem(hDlg, IDC_PROGRESS_DUMP), SW_SHOW);
 				}
@@ -256,8 +373,12 @@ LRESULT CALLBACK MainDlgProc( HWND hDlg, UINT Msg, WPARAM wParam, LPARAM lParam 
 		{
 			EnableWindow(GetDlgItem(hDlg, IDC_BUTTON_START), TRUE);
 			EnableWindow(GetDlgItem(hDlg, IDC_BUTTON_BROWSE_VHD), TRUE);
+			EnableWindow(GetDlgItem(hDlg, IDC_BUTTON_BROWSE_VHD_SAVE), TRUE);
 			EnableWindow(GetDlgItem(hDlg, IDC_EDIT_VHD_FILE), TRUE);
+			EnableWindow(GetDlgItem(hDlg, IDC_EDIT_VHD_SAVE_FILE), TRUE);
 			EnableWindow(GetDlgItem(hDlg, IDC_COMBO1), TRUE);
+			EnableWindow(GetDlgItem(hDlg, IDC_RADIO_VHD_TO_DISK), TRUE);
+			EnableWindow(GetDlgItem(hDlg, IDC_RADIO_DISK_TO_VHD), TRUE);
 		}
 
 		return TRUE;
