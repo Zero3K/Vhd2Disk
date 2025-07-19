@@ -363,9 +363,18 @@ BOOL CVhdToDisk::ParseFirstSector(HWND hDlg)
 			dwOffset+= 0x10;
 		}
 	}
+	else
+	{
+		// VHD doesn't have a valid MBR boot signature, might be GPT or unpartitioned
+		// Still show the list view and partition view (they will show as empty)
+	}
 
+	// Set return value to TRUE if we successfully parsed partitions
+	bReturn = TRUE;
+	
 	// Trigger redraw of the partition view
 	InvalidateRect(GetDlgItem(hDlg, IDC_STATIC_PARTITION_VIEW), NULL, TRUE);
+	UpdateWindow(GetDlgItem(hDlg, IDC_STATIC_PARTITION_VIEW));
 
 clean:
 
