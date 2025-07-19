@@ -440,12 +440,21 @@ LRESULT CALLBACK MainDlgProc( HWND hDlg, UINT Msg, WPARAM wParam, LPARAM lParam 
 		{
 		case IDC_RADIO_VHD_TO_DISK:
 			UpdateUIMode(hDlg, TRUE);
+			// Clear partition list but keep it visible
 			ListView_DeleteAllItems(GetDlgItem(hDlg, IDC_LIST_VOLUME));
+			g_partitionCount = 0;
+			InvalidateRect(GetDlgItem(hDlg, IDC_STATIC_PARTITION_VIEW), NULL, TRUE);
+			UpdateWindow(GetDlgItem(hDlg, IDC_STATIC_PARTITION_VIEW));
+			SetDlgItemText(hDlg, IDC_STATIC_STATUS, L"Select a VHD file to view partitions");
 			return TRUE;
 
 		case IDC_RADIO_DISK_TO_VHD:
 			UpdateUIMode(hDlg, FALSE);
+			// Clear partition list and parse the currently selected drive
 			ListView_DeleteAllItems(GetDlgItem(hDlg, IDC_LIST_VOLUME));
+			g_partitionCount = 0;
+			// Parse the selected physical drive if available
+			ParseSelectedPhysicalDrive(hDlg);
 			return TRUE;
 		
 		case IDC_EDIT_VHD_SAVE_FILE:
@@ -500,10 +509,24 @@ LRESULT CALLBACK MainDlgProc( HWND hDlg, UINT Msg, WPARAM wParam, LPARAM lParam 
 					delete pVhd2disk;
 
 				ListView_DeleteAllItems(GetDlgItem(hDlg, IDC_LIST_VOLUME));
+				g_partitionCount = 0;
 
 				pVhd2disk = new CVhdToDisk(sVhdPath);
 				if(pVhd2disk)
-					pVhd2disk->ParseFirstSector(hDlg);
+				{
+					if(pVhd2disk->ParseFirstSector(hDlg))
+					{
+						SetDlgItemText(hDlg, IDC_STATIC_STATUS, L"VHD file loaded and parsed successfully");
+					}
+					else
+					{
+						SetDlgItemText(hDlg, IDC_STATIC_STATUS, L"Failed to parse VHD file");
+					}
+				}
+				else
+				{
+					SetDlgItemText(hDlg, IDC_STATIC_STATUS, L"Failed to create VHD parser");
+				}
 			}
 			return TRUE;
 
