@@ -72,6 +72,7 @@ public:
 
 
 	BOOL ParseFirstSector(HWND hDlg);
+	BOOL ParsePhysicalDrivePartitions(HWND hDlg, LPCWSTR drivePath);
 
 protected:
 

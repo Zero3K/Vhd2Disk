@@ -180,11 +180,17 @@ void DrawPartitionView(HWND hWnd, HDC hdc, RECT* pRect)
 	DrawText(hdc, sizeText, -1, &sizeRect, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
 }
 
-void PopulatePhysicalDriveComboBox(HWND hDlg)
+void PopulatePhysicalDriveComboBox(HWND hDlg, int controlId = 0)
 {
 	HANDLE hFile = NULL;
 	WCHAR sPhysicalDrive[64] = {0};
-	HWND hCombo = GetDlgItem(hDlg, IDC_COMBO1);
+	HWND hCombo;
+	
+	if(controlId == 0)
+		return; // No default combo box anymore
+		
+	hCombo = GetDlgItem(hDlg, controlId);
+	if(!hCombo) return;
 	
 	SendMessage(hCombo, CB_RESETCONTENT, 0, 0);
 
@@ -205,6 +211,50 @@ void PopulatePhysicalDriveComboBox(HWND hDlg)
 			SendMessage(hCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(sPhysicalDrive));
 		}
 	}
+	
+	// Select first item if available
+	if(SendMessage(hCombo, CB_GETCOUNT, 0, 0) > 0)
+	{
+		SendMessage(hCombo, CB_SETCURSEL, 0, 0);
+	}
+}
+
+void ParseSelectedPhysicalDrive(HWND hDlg)
+{
+	HWND hCombo = GetDlgItem(hDlg, IDC_EDIT_VHD_SAVE_FILE);
+	if(!hCombo) return;
+	
+	int nSelected = SendMessage(hCombo, CB_GETCURSEL, 0, 0);
+	if(nSelected == CB_ERR) return;
+	
+	WCHAR sDrivePath[MAX_PATH] = {0};
+	SendMessage(hCombo, CB_GETLBTEXT, nSelected, (LPARAM)sDrivePath);
+	
+	// Parse the selected physical drive using the VHD parser class
+	if(pVhd2disk)
+	{
+		if(pVhd2disk->ParsePhysicalDrivePartitions(hDlg, sDrivePath))
+		{
+			SetDlgItemText(hDlg, IDC_STATIC_STATUS, L"Physical drive parsed successfully");
+		}
+		else
+		{
+			SetDlgItemText(hDlg, IDC_STATIC_STATUS, L"Failed to parse physical drive");
+		}
+	}
+	else
+	{
+		// Create a temporary instance to parse the drive
+		CVhdToDisk tempParser;
+		if(tempParser.ParsePhysicalDrivePartitions(hDlg, sDrivePath))
+		{
+			SetDlgItemText(hDlg, IDC_STATIC_STATUS, L"Physical drive parsed successfully");
+		}
+		else
+		{
+			SetDlgItemText(hDlg, IDC_STATIC_STATUS, L"Failed to parse physical drive");
+		}
+	}
 }
 
 void UpdateUIMode(HWND hDlg, BOOL bVhdToDisk)
@@ -212,7 +262,7 @@ void UpdateUIMode(HWND hDlg, BOOL bVhdToDisk)
 	// Show/hide controls based on operation mode
 	if(bVhdToDisk)
 	{
-		// VHD to Disk mode
+		// VHD to Disk mode - show VHD file selection
 		ShowWindow(GetDlgItem(hDlg, IDC_EDIT_VHD_FILE), SW_SHOW);
 		ShowWindow(GetDlgItem(hDlg, IDC_BUTTON_BROWSE_VHD), SW_SHOW);
 		ShowWindow(GetDlgItem(hDlg, IDC_STATIC_VHD_LOAD), SW_SHOW);
@@ -223,7 +273,7 @@ void UpdateUIMode(HWND hDlg, BOOL bVhdToDisk)
 	}
 	else
 	{
-		// Disk to VHD mode
+		// Disk to VHD mode - show physical drive selection
 		ShowWindow(GetDlgItem(hDlg, IDC_EDIT_VHD_FILE), SW_HIDE);
 		ShowWindow(GetDlgItem(hDlg, IDC_BUTTON_BROWSE_VHD), SW_HIDE);
 		ShowWindow(GetDlgItem(hDlg, IDC_STATIC_VHD_LOAD), SW_HIDE);
@@ -231,6 +281,11 @@ void UpdateUIMode(HWND hDlg, BOOL bVhdToDisk)
 		ShowWindow(GetDlgItem(hDlg, IDC_EDIT_VHD_SAVE_FILE), SW_SHOW);
 		ShowWindow(GetDlgItem(hDlg, IDC_BUTTON_BROWSE_VHD_SAVE), SW_SHOW);
 		ShowWindow(GetDlgItem(hDlg, IDC_STATIC_VHD_SAVE), SW_SHOW);
+		
+		// Populate physical drives combo box
+		PopulatePhysicalDriveComboBox(hDlg, IDC_EDIT_VHD_SAVE_FILE);
+		// Parse the first available physical drive
+		ParseSelectedPhysicalDrive(hDlg);
 	}
 }
 
@@ -359,7 +414,8 @@ LRESULT CALLBACK MainDlgProc( HWND hDlg, UINT Msg, WPARAM wParam, LPARAM lParam 
 
 		SendMessage(hDlg, WM_SETICON, ICON_BIG, (LPARAM)hIcon);
 
-		PopulatePhysicalDriveComboBox(hDlg);
+		// Remove target drive selection and start functionality since this is now a viewer
+		// PopulatePhysicalDriveComboBox(hDlg);
 
 		AddListHeader(hDlg);
 		
@@ -391,13 +447,21 @@ LRESULT CALLBACK MainDlgProc( HWND hDlg, UINT Msg, WPARAM wParam, LPARAM lParam 
 			UpdateUIMode(hDlg, FALSE);
 			ListView_DeleteAllItems(GetDlgItem(hDlg, IDC_LIST_VOLUME));
 			return TRUE;
+		
+		case IDC_EDIT_VHD_SAVE_FILE:
+			if(HIWORD(wParam) == CBN_SELCHANGE)
+			{
+				// Parse the newly selected physical drive
+				ParseSelectedPhysicalDrive(hDlg);
+			}
+			return TRUE;
 
 		case IDC_BUTTON_BROWSE_VHD_SAVE:
-			sVhdPath[0] = L'\0';
-			if (DoSaveFileDialog(sVhdPath, L"VHD Files (*.vhd)\0*.vhd\0All Files (*.*)\0*.*\0", L"vhd") == IDOK)
-			{
-				SetDlgItemText(hDlg, IDC_EDIT_VHD_SAVE_FILE, sVhdPath);
-			}
+			// Refresh physical drives list and parse selected drive
+			PopulatePhysicalDriveComboBox(hDlg, IDC_EDIT_VHD_SAVE_FILE);
+			// Parse the currently selected physical drive
+			ParseSelectedPhysicalDrive(hDlg);
+			return TRUE;
 			return TRUE;
 
 		case IDCANCEL:
@@ -443,69 +507,7 @@ LRESULT CALLBACK MainDlgProc( HWND hDlg, UINT Msg, WPARAM wParam, LPARAM lParam 
 			}
 			return TRUE;
 
-		case IDC_BUTTON_START:
-			
-			ZeroMemory(&dmpstruct, sizeof(DUMPTHRDSTRUCT));
-			dmpstruct.hDlg = hDlg;
-			
-			// Determine operation mode
-			dmpstruct.bVhdToDisk = IsDlgButtonChecked(hDlg, IDC_RADIO_VHD_TO_DISK) == BST_CHECKED;
-			
-			if(dmpstruct.bVhdToDisk)
-			{
-				// VHD to Disk: get VHD file path
-				GetDlgItemText(hDlg, IDC_EDIT_VHD_FILE, dmpstruct.sVhdPath, MAX_PATH);
-			}
-			else
-			{
-				// Disk to VHD: get save VHD path
-				GetDlgItemText(hDlg, IDC_EDIT_VHD_SAVE_FILE, dmpstruct.sVhdPath, MAX_PATH);
-			}
-			
-			if(wcslen(dmpstruct.sVhdPath) < 3) return TRUE;
-
-			nComboIndex = SendMessage(GetDlgItem(hDlg, IDC_COMBO1), CB_GETCURSEL, 0, 0);
-			if(nComboIndex == CB_ERR) return TRUE;
-			nLen = SendMessage(GetDlgItem(hDlg, IDC_COMBO1), CB_GETLBTEXTLEN, nComboIndex, 0);
-
-			if(nLen < 8 || nLen > 64) return TRUE;
-			SendMessage(GetDlgItem(hDlg, IDC_COMBO1), CB_GETLBTEXT, nComboIndex, (LPARAM)dmpstruct.sDrive);
-			
-			LPCWSTR warningMsg = dmpstruct.bVhdToDisk ? 
-				L"Are you sure to proceed? This operation will destroy all data present on the target drive" :
-				L"Are you sure to proceed? This operation will create a VHD file from the selected drive";
-				
-			if(MessageBox(hDlg, warningMsg, L"Warning!", MB_OKCANCEL) == IDOK)
-			{
-				hDumpThread = CreateThread(NULL, 0, DumpThread, &dmpstruct, 0, &dwThrdID);
-				if(hDumpThread != INVALID_HANDLE_VALUE)
-				{
-					EnableWindow(GetDlgItem(hDlg, IDC_BUTTON_START), FALSE);
-					EnableWindow(GetDlgItem(hDlg, IDC_BUTTON_BROWSE_VHD), FALSE);
-					EnableWindow(GetDlgItem(hDlg, IDC_BUTTON_BROWSE_VHD_SAVE), FALSE);
-					EnableWindow(GetDlgItem(hDlg, IDC_EDIT_VHD_FILE), FALSE);
-					EnableWindow(GetDlgItem(hDlg, IDC_EDIT_VHD_SAVE_FILE), FALSE);
-					EnableWindow(GetDlgItem(hDlg, IDC_COMBO1), FALSE);
-					EnableWindow(GetDlgItem(hDlg, IDC_RADIO_VHD_TO_DISK), FALSE);
-					EnableWindow(GetDlgItem(hDlg, IDC_RADIO_DISK_TO_VHD), FALSE);
-
-					ShowWindow(GetDlgItem(hDlg, IDC_PROGRESS_DUMP), SW_SHOW);
-					
-					// Initialize progress bar
-					HWND hProgress = GetDlgItem(hDlg, IDC_PROGRESS_DUMP);
-					if(hProgress)
-					{
-						SendMessage(hProgress, PBM_SETRANGE, 0, MAKELPARAM(0, 100));
-						SendMessage(hProgress, PBM_SETPOS, 0, 0);
-					}
-				}
-				else
-				{
-					SetDlgItemText(hDlg, IDC_STATIC_STATUS, L"Failed to start the dump's thread");
-				}
-			}
-
-			return TRUE;
+		// Removed IDC_BUTTON_START case - no longer needed
 		}
 		break;
 	case WM_SIZING:
@@ -535,12 +537,10 @@ LRESULT CALLBACK MainDlgProc( HWND hDlg, UINT Msg, WPARAM wParam, LPARAM lParam 
 
 			if(LOWORD(lParam) == 1)
 			{
-				EnableWindow(GetDlgItem(hDlg, IDC_BUTTON_START), TRUE);
 				EnableWindow(GetDlgItem(hDlg, IDC_BUTTON_BROWSE_VHD), TRUE);
 				EnableWindow(GetDlgItem(hDlg, IDC_BUTTON_BROWSE_VHD_SAVE), TRUE);
 				EnableWindow(GetDlgItem(hDlg, IDC_EDIT_VHD_FILE), TRUE);
 				EnableWindow(GetDlgItem(hDlg, IDC_EDIT_VHD_SAVE_FILE), TRUE);
-				EnableWindow(GetDlgItem(hDlg, IDC_COMBO1), TRUE);
 				EnableWindow(GetDlgItem(hDlg, IDC_RADIO_VHD_TO_DISK), TRUE);
 				EnableWindow(GetDlgItem(hDlg, IDC_RADIO_DISK_TO_VHD), TRUE);
 				

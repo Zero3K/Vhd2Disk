@@ -385,6 +385,180 @@ clean:
 	return bReturn;
 }
 
+BOOL CVhdToDisk::ParsePhysicalDrivePartitions(HWND hDlg, LPCWSTR drivePath)
+{
+	BOOL bReturn = FALSE;
+	HANDLE hDrive = INVALID_HANDLE_VALUE;
+	BYTE* pBuff = NULL;
+	DWORD dwByteRead = 0;
+	WCHAR sTemp[256] = {0};
+
+	// Open the physical drive
+	hDrive = CreateFile(drivePath,
+		GENERIC_READ,
+		FILE_SHARE_READ | FILE_SHARE_WRITE,
+		NULL,
+		OPEN_EXISTING,
+		0,
+		NULL);
+
+	if(hDrive == INVALID_HANDLE_VALUE)
+	{
+		SetDlgItemText(hDlg, IDC_STATIC_STATUS, L"Failed to open physical drive");
+		return FALSE;
+	}
+
+	// Allocate buffer for reading the MBR
+	pBuff = new BYTE[512];
+	if(!pBuff)
+	{
+		CloseHandle(hDrive);
+		return FALSE;
+	}
+
+	// Read the MBR (first sector)
+	if(!ReadFile(hDrive, pBuff, 512, &dwByteRead, NULL) || dwByteRead != 512)
+	{
+		SetDlgItemText(hDlg, IDC_STATIC_STATUS, L"Failed to read MBR from physical drive");
+		goto clean;
+	}
+
+	// Clear the list view and global partition data
+	ListView_DeleteAllItems(GetDlgItem(hDlg, IDC_LIST_VOLUME));
+	g_partitionCount = 0;
+
+	// Get disk size (this is a simplified approach)
+	LARGE_INTEGER diskSize;
+	if(GetFileSizeEx(hDrive, &diskSize))
+	{
+		g_totalDiskSize = diskSize.QuadPart / 512; // Convert to sectors
+	}
+	else
+	{
+		g_totalDiskSize = 0;
+	}
+
+	// Check for MBR signature
+	DWORD dwBootSector = ((DWORD)pBuff[510]) << 8;
+	dwBootSector += ((BYTE)pBuff[511]);
+
+	if(dwBootSector == 0x000055AA)
+	{
+		DWORD dwOffset = 0x1be; // Partition table offset in MBR
+		HWND hwdListCtrl = GetDlgItem(hDlg, IDC_LIST_VOLUME);
+		if(!hwdListCtrl) goto clean;
+		
+		int partitionNumber = 1;
+		int nItem = 0;
+
+		// Parse up to 4 primary partitions
+		while(dwOffset < 0x1fe && g_partitionCount < 16 && partitionNumber <= 4)
+		{
+			if(pBuff[dwOffset + 4] != 0x00) // Check if partition type is not empty
+			{
+				LVITEM item;
+				item.mask = LVIF_TEXT;
+				item.iItem = nItem;
+				
+				// Get partition information
+				BYTE partitionType = pBuff[dwOffset + 4];
+				UINT32 startLBA = *((UINT32*)&pBuff[dwOffset + 8]);
+				UINT32 sizeSectors = *((UINT32*)&pBuff[dwOffset + 12]);
+				BOOL isBootable = (pBuff[dwOffset] == 0x80);
+				
+				// Store in global partition array for drawing
+				g_partitions[g_partitionCount].startLBA = startLBA;
+				g_partitions[g_partitionCount].sizeSectors = sizeSectors;
+				g_partitions[g_partitionCount].partitionType = partitionType;
+				g_partitions[g_partitionCount].isBootable = isBootable;
+				wcscpy_s(g_partitions[g_partitionCount].label, 64, L"Unknown");
+				wcscpy_s(g_partitions[g_partitionCount].filesystem, 32, GetPartitionTypeName(partitionType));
+				FormatSizeString(g_partitions[g_partitionCount].size, sizeSectors);
+				g_partitionCount++;
+				
+				// Column 0: Drive (extract drive letter from path)
+				item.iSubItem = 0;
+				wsprintf(sTemp, L"Disk %d", partitionNumber);
+				item.pszText = sTemp;
+				ListView_InsertItem(hwdListCtrl, &item);
+
+				// Column 1: HD (Hard Drive number)
+				item.iSubItem = 1;
+				item.pszText = L"1";
+				ListView_SetItem(hwdListCtrl, &item);
+
+				// Column 2: PartNo (Partition Number)
+				wsprintf(sTemp, L"Pri %d", partitionNumber);
+				item.iSubItem = 2;
+				item.pszText = sTemp;
+				ListView_SetItem(hwdListCtrl, &item);
+
+				// Column 3: PartStart (Starting LBA)
+				wsprintf(sTemp, L"%u", startLBA);
+				item.iSubItem = 3;
+				item.pszText = sTemp;
+				ListView_SetItem(hwdListCtrl, &item);
+
+				// Column 4: PartSize (Size in sectors)
+				wsprintf(sTemp, L"%u", sizeSectors);
+				item.iSubItem = 4;
+				item.pszText = sTemp;
+				ListView_SetItem(hwdListCtrl, &item);
+
+				// Column 5: Label (not available from partition table)
+				item.iSubItem = 5;
+				item.pszText = L"Unknown";
+				ListView_SetItem(hwdListCtrl, &item);
+
+				// Column 6: Filesystem (partition type)
+				item.iSubItem = 6;
+				item.pszText = (WCHAR*)GetPartitionTypeName(partitionType);
+				ListView_SetItem(hwdListCtrl, &item);
+
+				// Column 7: Size (formatted size)
+				FormatSizeString(sTemp, sizeSectors);
+				item.iSubItem = 7;
+				item.pszText = sTemp;
+				ListView_SetItem(hwdListCtrl, &item);
+
+				// Column 8: Used (placeholder - implement filesystem analysis later)
+				item.iSubItem = 8;
+				item.pszText = L"Unknown";
+				ListView_SetItem(hwdListCtrl, &item);
+
+				// Column 9: Free (placeholder - implement filesystem analysis later)
+				item.iSubItem = 9;
+				item.pszText = L"Unknown";
+				ListView_SetItem(hwdListCtrl, &item);
+
+				nItem++;
+			}
+			dwOffset += 0x10; // Move to next partition entry
+			partitionNumber++;
+		}
+		
+		SetDlgItemText(hDlg, IDC_STATIC_STATUS, L"Physical drive partitions parsed successfully");
+	}
+	else
+	{
+		// No valid MBR signature - might be GPT or unpartitioned
+		SetDlgItemText(hDlg, IDC_STATIC_STATUS, L"Drive does not have a valid MBR signature");
+	}
+
+	bReturn = TRUE;
+	
+	// Trigger redraw of the partition view
+	InvalidateRect(GetDlgItem(hDlg, IDC_STATIC_PARTITION_VIEW), NULL, TRUE);
+	UpdateWindow(GetDlgItem(hDlg, IDC_STATIC_PARTITION_VIEW));
+
+clean:
+	if(pBuff) delete[] pBuff;
+	if(hDrive != INVALID_HANDLE_VALUE) CloseHandle(hDrive);
+
+	return bReturn;
+}
+}
+
 BOOL CVhdToDisk::Dump(HWND phWnd)
 {
 	BOOL bReturn = FALSE;
