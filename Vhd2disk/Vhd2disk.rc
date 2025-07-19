@@ -50,7 +50,7 @@ BEGIN
     LTEXT           "Vhd2disk v0.3",IDC_STATIC_NAME,10,6,96,8
     CONTROL         "",IDC_STATIC,"Static",SS_BLACKFRAME,0,185,267,1
     LTEXT           "Status:",IDC_STATIC,5,195,24,8
-    LTEXT           "",IDC_STATIC_STATUS,33,195,165,8
+    LTEXT           "",IDC_STATIC_STATUS,33,195,230,8
     CONTROL         "",IDC_PROGRESS_DUMP,"msctls_progress32",NOT WS_VISIBLE | WS_BORDER,0,170,265,12
     LTEXT           "Copyright � 2011-2012 Bruno Roques",IDC_STATIC,9,16,216,8
     LTEXT           "Wooxo - www.wooxo.com",IDC_STATIC_URL,10,26,156,8

@@ -330,6 +330,7 @@ BOOL CDiskToVhd::DumpDiskToVhdData(HWND hDlg)
 	
 	// Initialize timing for progress estimation
 	DWORD startTime = GetTickCount();
+	DWORD lastStatusUpdate = startTime;
 	UINT64 totalDataProcessed = 0;
 	
 	// Allocate buffers for reading disk data and block bitmap
@@ -360,9 +361,11 @@ BOOL CDiskToVhd::DumpDiskToVhdData(HWND hDlg)
 	// Process each block
 	for(UINT32 blockIndex = 0; blockIndex < totalBlocks; blockIndex++)
 	{
-		// Update progress
-		if(blockIndex % 10 == 0) // Update every 10 blocks to avoid too many UI updates
+		// Update progress (time-based throttling to reduce flicker)
+		DWORD currentTime = GetTickCount();
+		if(currentTime - lastStatusUpdate >= 500 || blockIndex == 0 || blockIndex == totalBlocks - 1) // Update every 500ms, first block, or last block
 		{
+			lastStatusUpdate = currentTime;
 			// Calculate progress and timing information
 			int progressPercent = (blockIndex * 100) / totalBlocks;
 			DWORD elapsedTime = GetTickCount() - startTime;

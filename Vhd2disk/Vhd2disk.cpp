@@ -26,6 +26,7 @@ HANDLE hDumpThread = NULL;
 CVhdToDisk* pVhd2disk = NULL;
 CDiskToVhd* pDisk2vhd = NULL;
 DUMPTHRDSTRUCT dmpstruct;
+static WCHAR g_lastStatusText[512] = {0}; // Buffer to prevent redundant status updates
 
 
 UINT APIENTRY OFNHookProc(HWND hdlg, UINT uiMsg, WPARAM wParam, LPARAM lParam) 
@@ -375,7 +376,13 @@ LRESULT CALLBACK MainDlgProc( HWND hDlg, UINT Msg, WPARAM wParam, LPARAM lParam 
 
 	case MYWM_UPDATE_STATUS:
 
-		SetDlgItemText(hDlg, IDC_STATIC_STATUS, (LPCWSTR)wParam);
+		// Only update if the text has actually changed to reduce flicker
+		LPCWSTR newStatusText = (LPCWSTR)wParam;
+		if(wcscmp(g_lastStatusText, newStatusText) != 0)
+		{
+			wcscpy_s(g_lastStatusText, 512, newStatusText);
+			SetDlgItemText(hDlg, IDC_STATIC_STATUS, newStatusText);
+		}
 
 		if(LOWORD(lParam) == 1)
 		{
