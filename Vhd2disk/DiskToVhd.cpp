@@ -35,8 +35,23 @@ BOOL CDiskToVhd::OpenPhysicalDrive(LPWSTR sDrive)
 
 	if(m_hPhysicalDrive == INVALID_HANDLE_VALUE)
 	{
+		DWORD error = GetLastError();
 		m_hPhysicalDrive = NULL;
-		return FALSE;
+		
+		// Try with backup privileges for better access
+		m_hPhysicalDrive = CreateFile(sDrive
+			, GENERIC_READ
+			, FILE_SHARE_READ | FILE_SHARE_WRITE
+			, NULL
+			, OPEN_EXISTING
+			, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_SEQUENTIAL_SCAN
+			, NULL);
+			
+		if(m_hPhysicalDrive == INVALID_HANDLE_VALUE)
+		{
+			m_hPhysicalDrive = NULL;
+			return FALSE;
+		}
 	}
 
 	return TRUE;
@@ -224,18 +239,23 @@ BOOL CDiskToVhd::WriteBlockAllocationTable()
 BOOL CDiskToVhd::DumpDiskToVhd(const LPWSTR sDrive, const LPWSTR sVhdPath, const HWND hDlg)
 {
 	if(!OpenPhysicalDrive((LPWSTR)sDrive))
+	{
+		SendMessage(hDlg, MYWM_UPDATE_STATUS, (WPARAM)L"Failed to open physical drive. Administrator privileges may be required.", 1);
 		return FALSE;
+	}
 
 	UINT64 diskSize = GetDiskSize();
 	if(diskSize == 0)
 	{
 		ClosePhysicalDrive();
+		SendMessage(hDlg, MYWM_UPDATE_STATUS, (WPARAM)L"Failed to determine disk size.", 1);
 		return FALSE;
 	}
 
 	if(!CreateVhdFile((LPWSTR)sVhdPath))
 	{
 		ClosePhysicalDrive();
+		SendMessage(hDlg, MYWM_UPDATE_STATUS, (WPARAM)L"Failed to create VHD file. Check path and permissions.", 1);
 		return FALSE;
 	}
 
@@ -243,6 +263,7 @@ BOOL CDiskToVhd::DumpDiskToVhd(const LPWSTR sDrive, const LPWSTR sVhdPath, const
 	{
 		CloseVhdFile();
 		ClosePhysicalDrive();
+		SendMessage(hDlg, MYWM_UPDATE_STATUS, (WPARAM)L"Failed to initialize VHD structures.", 1);
 		return FALSE;
 	}
 
@@ -251,6 +272,7 @@ BOOL CDiskToVhd::DumpDiskToVhd(const LPWSTR sDrive, const LPWSTR sVhdPath, const
 	{
 		CloseVhdFile();
 		ClosePhysicalDrive();
+		SendMessage(hDlg, MYWM_UPDATE_STATUS, (WPARAM)L"Failed to write VHD footer.", 1);
 		return FALSE;
 	}
 
@@ -259,6 +281,7 @@ BOOL CDiskToVhd::DumpDiskToVhd(const LPWSTR sDrive, const LPWSTR sVhdPath, const
 	{
 		CloseVhdFile();
 		ClosePhysicalDrive();
+		SendMessage(hDlg, MYWM_UPDATE_STATUS, (WPARAM)L"Failed to write VHD dynamic header.", 1);
 		return FALSE;
 	}
 
@@ -267,6 +290,7 @@ BOOL CDiskToVhd::DumpDiskToVhd(const LPWSTR sDrive, const LPWSTR sVhdPath, const
 	{
 		CloseVhdFile();
 		ClosePhysicalDrive();
+		SendMessage(hDlg, MYWM_UPDATE_STATUS, (WPARAM)L"Failed to write VHD block allocation table.", 1);
 		return FALSE;
 	}
 
@@ -281,79 +305,143 @@ BOOL CDiskToVhd::DumpDiskToVhd(const LPWSTR sDrive, const LPWSTR sVhdPath, const
 
 BOOL CDiskToVhd::DumpDiskToVhdData(HWND hDlg)
 {
-	SendMessage(hDlg, MYWM_UPDATE_STATUS, (WPARAM)L"Reading disk and creating VHD...", 0);
-	
-	// For a basic implementation, we'll create a minimal VHD structure
-	// A complete implementation would read the disk sector by sector,
-	// detect empty blocks, and write only non-empty blocks with proper bitmaps
+	SendMessage(hDlg, MYWM_UPDATE_STATUS, (WPARAM)L"Initializing disk to VHD conversion...", 0);
 	
 	UINT64 diskSize = GetDiskSize();
 	UINT32 blockSize = _byteswap_ulong(m_Dyn.blockSize);
 	UINT32 totalBlocks = (UINT32)((diskSize + blockSize - 1) / blockSize);
+	UINT32 sectorsPerBlock = blockSize / 512;
+	UINT32 bitmapSize = (sectorsPerBlock / 8 + 511) & ~511; // Align to 512 bytes
 	
-	SendMessage(hDlg, MYWM_UPDATE_STATUS, (WPARAM)L"Reading first disk sectors...", 0);
+	// Allocate buffers for reading disk data and block bitmap
+	BYTE* diskBuffer = new BYTE[blockSize];
+	BYTE* bitmapBuffer = new BYTE[bitmapSize];
+	UINT32* bat = new UINT32[totalBlocks];
 	
-	// Read first few sectors to get partition table and basic structure
-	BYTE* buffer = new BYTE[512 * 63]; // Read first track
-	if(!buffer)
-		return FALSE;
-		
-	DWORD bytesRead;
-	LARGE_INTEGER pos;
-	pos.QuadPart = 0;
-	
-	if(!SetFilePointerEx(m_hPhysicalDrive, pos, NULL, FILE_BEGIN) ||
-	   !ReadFile(m_hPhysicalDrive, buffer, 512 * 63, &bytesRead, NULL))
+	if(!diskBuffer || !bitmapBuffer || !bat)
 	{
-		delete[] buffer;
+		delete[] diskBuffer;
+		delete[] bitmapBuffer;
+		delete[] bat;
 		return FALSE;
 	}
 	
-	SendMessage(hDlg, MYWM_UPDATE_STATUS, (WPARAM)L"Creating VHD structure...", 0);
+	// Initialize BAT with all entries as unused
+	for(UINT32 i = 0; i < totalBlocks; i++)
+		bat[i] = 0xFFFFFFFF;
 	
-	// For this basic implementation, we'll create the VHD structure
-	// but only write the essential headers and first block
-	// A full implementation would process all disk blocks
+	// Calculate starting offset for data blocks (after headers and BAT)
+	UINT32 dataStartOffset = 1536 + (totalBlocks * 4);
+	dataStartOffset = (dataStartOffset + 511) & ~511; // Align to 512 bytes
+	UINT32 currentDataOffset = dataStartOffset;
 	
-	// Create a basic block entry (simplified)
-	UINT32 firstBlockOffset = 1536 + (totalBlocks * 4); // After BAT
-	firstBlockOffset = (firstBlockOffset + 511) & ~511; // Align to 512
+	WCHAR statusMsg[256];
+	LARGE_INTEGER diskPos, vhdPos;
+	DWORD bytesRead, bytesWritten;
 	
-	// Write first block data (simplified - just the boot sector area)
-	pos.QuadPart = firstBlockOffset;
-	if(SetFilePointerEx(m_hVhdFile, pos, NULL, FILE_BEGIN))
+	// Process each block
+	for(UINT32 blockIndex = 0; blockIndex < totalBlocks; blockIndex++)
 	{
-		// Write block bitmap (all sectors used for simplicity)
-		UINT32 bitmapSize = (blockSize / 512 / 8 + 511) & ~511;
-		BYTE* bitmap = new BYTE[bitmapSize];
-		if(bitmap)
+		// Update progress
+		if(blockIndex % 10 == 0) // Update every 10 blocks to avoid too many UI updates
 		{
-			memset(bitmap, 0xFF, bitmapSize); // Mark all sectors as used
-			DWORD bytesWritten;
-			WriteFile(m_hVhdFile, bitmap, bitmapSize, &bytesWritten, NULL);
+			wsprintf(statusMsg, L"Processing block %d of %d (%d%% complete)...", 
+				blockIndex + 1, totalBlocks, (blockIndex * 100) / totalBlocks);
+			SendMessage(hDlg, MYWM_UPDATE_STATUS, (WPARAM)statusMsg, 0);
 			
-			// Write actual sector data (first track)
-			WriteFile(m_hVhdFile, buffer, 512 * 63, &bytesWritten, NULL);
-			
-			delete[] bitmap;
+			// Update progress bar
+			int progressPercent = (blockIndex * 100) / totalBlocks;
+			SendMessage(hDlg, MYWM_UPDATE_PROGRESSBAR, progressPercent, 0);
 		}
 		
-		// Update BAT to point to this block
-		pos.QuadPart = 1536; // BAT location
-		if(SetFilePointerEx(m_hVhdFile, pos, NULL, FILE_BEGIN))
+		// Calculate disk position for this block
+		diskPos.QuadPart = (UINT64)blockIndex * blockSize;
+		
+		// Read block from disk
+		if(!SetFilePointerEx(m_hPhysicalDrive, diskPos, NULL, FILE_BEGIN))
+			continue; // Skip this block if seek fails
+		
+		UINT32 bytesToRead = blockSize;
+		if(diskPos.QuadPart + blockSize > diskSize)
+			bytesToRead = (UINT32)(diskSize - diskPos.QuadPart);
+		
+		if(!ReadFile(m_hPhysicalDrive, diskBuffer, bytesToRead, &bytesRead, NULL) || bytesRead == 0)
+			continue; // Skip this block if read fails
+		
+		// Check if block contains any non-zero data
+		BOOL isEmptyBlock = TRUE;
+		for(UINT32 i = 0; i < bytesRead && isEmptyBlock; i++)
 		{
-			UINT32 blockOffset = _byteswap_ulong(firstBlockOffset / 512);
-			WriteFile(m_hVhdFile, &blockOffset, sizeof(UINT32), &bytesRead, NULL);
+			if(diskBuffer[i] != 0)
+				isEmptyBlock = FALSE;
+		}
+		
+		// Skip empty blocks to save space (sparse VHD)
+		if(isEmptyBlock)
+			continue;
+		
+		// Create block bitmap - mark sectors as used
+		memset(bitmapBuffer, 0, bitmapSize);
+		UINT32 usedSectors = (bytesRead + 511) / 512;
+		for(UINT32 sector = 0; sector < usedSectors; sector++)
+		{
+			UINT32 byteIndex = sector / 8;
+			UINT32 bitIndex = 7 - (sector % 8);
+			if(byteIndex < bitmapSize)
+				bitmapBuffer[byteIndex] |= (1 << bitIndex);
+		}
+		
+		// Write block to VHD file
+		vhdPos.QuadPart = currentDataOffset;
+		if(SetFilePointerEx(m_hVhdFile, vhdPos, NULL, FILE_BEGIN))
+		{
+			// Write bitmap first
+			if(WriteFile(m_hVhdFile, bitmapBuffer, bitmapSize, &bytesWritten, NULL) && bytesWritten == bitmapSize)
+			{
+				// Pad partial blocks to sector boundary
+				UINT32 paddedSize = (bytesRead + 511) & ~511;
+				if(paddedSize > bytesRead)
+					memset(diskBuffer + bytesRead, 0, paddedSize - bytesRead);
+				
+				// Write block data
+				if(WriteFile(m_hVhdFile, diskBuffer, paddedSize, &bytesWritten, NULL) && bytesWritten == paddedSize)
+				{
+					// Update BAT entry
+					bat[blockIndex] = _byteswap_ulong(currentDataOffset / 512);
+					
+					// Advance data offset for next block
+					currentDataOffset += bitmapSize + paddedSize;
+				}
+			}
 		}
 	}
 	
-	delete[] buffer;
+	SendMessage(hDlg, MYWM_UPDATE_STATUS, (WPARAM)L"Writing block allocation table...", 0);
+	
+	// Write updated BAT to VHD file
+	vhdPos.QuadPart = 1536; // BAT location
+	if(!SetFilePointerEx(m_hVhdFile, vhdPos, NULL, FILE_BEGIN) ||
+	   !WriteFile(m_hVhdFile, bat, totalBlocks * sizeof(UINT32), &bytesWritten, NULL) ||
+	   bytesWritten != totalBlocks * sizeof(UINT32))
+	{
+		delete[] diskBuffer;
+		delete[] bitmapBuffer;
+		delete[] bat;
+		return FALSE;
+	}
 	
 	SendMessage(hDlg, MYWM_UPDATE_STATUS, (WPARAM)L"Finalizing VHD file...", 0);
+	SendMessage(hDlg, MYWM_UPDATE_PROGRESSBAR, 100, 0);
 	
 	// Write final footer at end of file
-	pos.QuadPart = 0;
-	SetFilePointerEx(m_hVhdFile, pos, NULL, FILE_END);
+	vhdPos.QuadPart = 0;
+	SetFilePointerEx(m_hVhdFile, vhdPos, NULL, FILE_END);
+	BOOL result = WriteFooter();
 	
-	return WriteFooter();
+	// Cleanup
+	delete[] diskBuffer;
+	delete[] bitmapBuffer;
+	delete[] bat;
+	
+	return result;
 }

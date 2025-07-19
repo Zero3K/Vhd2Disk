@@ -83,11 +83,11 @@ void PopulatePhysicalDriveComboBox(HWND hDlg)
 	{
 		wsprintf(sPhysicalDrive, L"\\\\.\\PhysicalDrive%d", i);
 		hFile = CreateFile(sPhysicalDrive
-			, GENERIC_WRITE
-			, 0
+			, GENERIC_READ
+			, FILE_SHARE_READ | FILE_SHARE_WRITE
 			, NULL
 			, OPEN_EXISTING
-			, FILE_FLAG_WRITE_THROUGH | FILE_FLAG_NO_BUFFERING
+			, 0
 			, NULL);
 
 		if(hFile != INVALID_HANDLE_VALUE)
@@ -351,6 +351,14 @@ LRESULT CALLBACK MainDlgProc( HWND hDlg, UINT Msg, WPARAM wParam, LPARAM lParam 
 					EnableWindow(GetDlgItem(hDlg, IDC_RADIO_DISK_TO_VHD), FALSE);
 
 					ShowWindow(GetDlgItem(hDlg, IDC_PROGRESS_DUMP), SW_SHOW);
+					
+					// Initialize progress bar
+					HWND hProgress = GetDlgItem(hDlg, IDC_PROGRESS_DUMP);
+					if(hProgress)
+					{
+						SendMessage(hProgress, PBM_SETRANGE, 0, MAKELPARAM(0, 100));
+						SendMessage(hProgress, PBM_SETPOS, 0, 0);
+					}
 				}
 				else
 				{
@@ -379,8 +387,22 @@ LRESULT CALLBACK MainDlgProc( HWND hDlg, UINT Msg, WPARAM wParam, LPARAM lParam 
 			EnableWindow(GetDlgItem(hDlg, IDC_COMBO1), TRUE);
 			EnableWindow(GetDlgItem(hDlg, IDC_RADIO_VHD_TO_DISK), TRUE);
 			EnableWindow(GetDlgItem(hDlg, IDC_RADIO_DISK_TO_VHD), TRUE);
+			
+			// Hide progress bar when operation completes
+			ShowWindow(GetDlgItem(hDlg, IDC_PROGRESS_DUMP), SW_HIDE);
 		}
 
+		return TRUE;
+
+	case MYWM_UPDATE_PROGRESSBAR:
+		
+		// Update progress bar
+		HWND hProgress = GetDlgItem(hDlg, IDC_PROGRESS_DUMP);
+		if(hProgress)
+		{
+			SendMessage(hProgress, PBM_SETPOS, wParam, 0);
+		}
+		
 		return TRUE;
 	
 	}
