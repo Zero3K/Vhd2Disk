@@ -4,6 +4,66 @@
 #include "Vhd2disk.h"
 #include "resource.h"
 
+// Helper function to get drive letter for a partition
+WCHAR GetDriveLetterForPartition(int driveNumber, UINT32 startLBA)
+{
+	WCHAR drives[26 * 4];
+	DWORD drivesBitmask = GetLogicalDrives();
+	
+	if (GetLogicalDriveStrings(sizeof(drives) / sizeof(WCHAR), drives) == 0)
+		return 0;
+		
+	WCHAR* drive = drives;
+	while (*drive)
+	{
+		if (drive[1] == L':' && drive[2] == L'\\')
+		{
+			WCHAR volumePath[MAX_PATH];
+			if (GetVolumePathName(drive, volumePath, MAX_PATH))
+			{
+				WCHAR volumeName[MAX_PATH];
+				if (GetVolumeNameForVolumeMountPoint(volumePath, volumeName, MAX_PATH))
+				{
+					HANDLE hVolume = CreateFile(volumeName, 0, FILE_SHARE_READ | FILE_SHARE_WRITE,
+						NULL, OPEN_EXISTING, 0, NULL);
+					
+					if (hVolume != INVALID_HANDLE_VALUE)
+					{
+						VOLUME_DISK_EXTENTS diskExtents;
+						DWORD bytesReturned;
+						
+						if (DeviceIoControl(hVolume, IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS,
+							NULL, 0, &diskExtents, sizeof(diskExtents), &bytesReturned, NULL))
+						{
+							if (diskExtents.NumberOfDiskExtents > 0)
+							{
+								DISK_EXTENT* extent = &diskExtents.Extents[0];
+								if (extent->DiskNumber == driveNumber)
+								{
+									// Check if the start offset matches our partition
+									UINT64 partitionStart = (UINT64)startLBA * 512;
+									if (extent->StartingOffset.QuadPart <= partitionStart &&
+										(extent->StartingOffset.QuadPart + extent->ExtentLength.QuadPart) > partitionStart)
+									{
+										CloseHandle(hVolume);
+										return drive[0];
+									}
+								}
+							}
+						}
+						CloseHandle(hVolume);
+					}
+				}
+			}
+		}
+		
+		// Move to next drive string
+		while (*drive++) ;
+	}
+	
+	return 0; // No drive letter found
+}
+
 // Helper function to convert partition type to readable string
 const WCHAR* GetPartitionTypeName(BYTE partitionType)
 {
@@ -50,31 +110,33 @@ const WCHAR* GetPartitionTypeName(BYTE partitionType)
 // Helper function to format size in human readable format
 void FormatSizeString(WCHAR* buffer, UINT64 sizeInSectors)
 {
+	if (!buffer) return;
+	
 	UINT64 sizeInBytes = sizeInSectors * 512;
 	
 	if(sizeInBytes >= (1024ULL * 1024 * 1024 * 1024)) // TB
 	{
 		double sizeInTB = (double)sizeInBytes / (1024.0 * 1024.0 * 1024.0 * 1024.0);
-		wsprintf(buffer, L"%.1f TB", sizeInTB);
+		swprintf_s(buffer, 32, L"%.1f TB", sizeInTB);
 	}
-	else if(sizeInBytes >= (1024 * 1024 * 1024)) // GB
+	else if(sizeInBytes >= (1024ULL * 1024 * 1024)) // GB
 	{
 		double sizeInGB = (double)sizeInBytes / (1024.0 * 1024.0 * 1024.0);
-		wsprintf(buffer, L"%.1f GB", sizeInGB);
+		swprintf_s(buffer, 32, L"%.1f GB", sizeInGB);
 	}
-	else if(sizeInBytes >= (1024 * 1024)) // MB
+	else if(sizeInBytes >= (1024ULL * 1024)) // MB
 	{
 		double sizeInMB = (double)sizeInBytes / (1024.0 * 1024.0);
-		wsprintf(buffer, L"%.1f MB", sizeInMB);
+		swprintf_s(buffer, 32, L"%.1f MB", sizeInMB);
 	}
 	else if(sizeInBytes >= 1024) // KB
 	{
 		double sizeInKB = (double)sizeInBytes / 1024.0;
-		wsprintf(buffer, L"%.1f KB", sizeInKB);
+		swprintf_s(buffer, 32, L"%.1f KB", sizeInKB);
 	}
 	else
 	{
-		wsprintf(buffer, L"%llu bytes", sizeInBytes);
+		swprintf_s(buffer, 32, L"%llu bytes", sizeInBytes);
 	}
 }
 
@@ -424,9 +486,10 @@ BOOL CVhdToDisk::ParseFirstSector(HWND hDlg)
 				ListView_SetItem(hwdListCtrl, &item);
 
 				// Column 7: Size (formatted size)
-				FormatSizeString(sTemp, sizeSectors);
+				WCHAR sizeStr[32];
+				FormatSizeString(sizeStr, sizeSectors);
 				item.iSubItem = 7;
-				item.pszText = sTemp;
+				item.pszText = sizeStr;
 				ListView_SetItem(hwdListCtrl, &item);
 
 				// Column 8: Used (calculate from filesystem)
@@ -476,6 +539,14 @@ BOOL CVhdToDisk::ParsePhysicalDrivePartitions(HWND hDlg, LPCWSTR drivePath)
 	BYTE* pBuff = NULL;
 	DWORD dwByteRead = 0;
 	WCHAR sTemp[256] = {0};
+	int driveNumber = 0;
+
+	// Extract drive number from path (e.g., "\\.\PhysicalDrive0" -> 0)
+	if(wcsstr(drivePath, L"PhysicalDrive"))
+	{
+		LPCWSTR driveNumStr = wcsstr(drivePath, L"PhysicalDrive") + wcslen(L"PhysicalDrive");
+		driveNumber = _wtoi(driveNumStr);
+	}
 
 	// Open the physical drive
 	hDrive = CreateFile(drivePath,
@@ -511,9 +582,17 @@ BOOL CVhdToDisk::ParsePhysicalDrivePartitions(HWND hDlg, LPCWSTR drivePath)
 	ListView_DeleteAllItems(GetDlgItem(hDlg, IDC_LIST_VOLUME));
 	g_partitionCount = 0;
 
-	// Get disk size (this is a simplified approach)
+	// Get disk size using IOCTL_DISK_GET_PARTITION_INFO_EX or similar
 	LARGE_INTEGER diskSize;
-	if(GetFileSizeEx(hDrive, &diskSize))
+	GET_LENGTH_INFORMATION lengthInfo;
+	DWORD bytesReturned;
+	
+	if(DeviceIoControl(hDrive, IOCTL_DISK_GET_LENGTH_INFO, NULL, 0, 
+		&lengthInfo, sizeof(lengthInfo), &bytesReturned, NULL))
+	{
+		g_totalDiskSize = lengthInfo.Length.QuadPart / 512; // Convert to sectors
+	}
+	else if(GetFileSizeEx(hDrive, &diskSize))
 	{
 		g_totalDiskSize = diskSize.QuadPart / 512; // Convert to sectors
 	}
@@ -560,15 +639,24 @@ BOOL CVhdToDisk::ParsePhysicalDrivePartitions(HWND hDlg, LPCWSTR drivePath)
 				FormatSizeString(g_partitions[g_partitionCount].size, sizeSectors);
 				g_partitionCount++;
 				
-				// Column 0: Drive (extract drive letter from path)
+				// Column 0: Drive (get actual drive letter)
 				item.iSubItem = 0;
-				wsprintf(sTemp, L"Disk %d", partitionNumber);
+				WCHAR driveLetter = GetDriveLetterForPartition(driveNumber, startLBA);
+				if(driveLetter != 0)
+				{
+					wsprintf(sTemp, L"%C:", driveLetter);
+				}
+				else
+				{
+					wcscpy_s(sTemp, 256, L"-");
+				}
 				item.pszText = sTemp;
 				ListView_InsertItem(hwdListCtrl, &item);
 
 				// Column 1: HD (Hard Drive number)
 				item.iSubItem = 1;
-				item.pszText = L"1";
+				wsprintf(sTemp, L"%d", driveNumber + 1);
+				item.pszText = sTemp;
 				ListView_SetItem(hwdListCtrl, &item);
 
 				// Column 2: PartNo (Partition Number)
@@ -600,9 +688,10 @@ BOOL CVhdToDisk::ParsePhysicalDrivePartitions(HWND hDlg, LPCWSTR drivePath)
 				ListView_SetItem(hwdListCtrl, &item);
 
 				// Column 7: Size (formatted size)
-				FormatSizeString(sTemp, sizeSectors);
+				WCHAR sizeStr[32];
+				FormatSizeString(sizeStr, sizeSectors);
 				item.iSubItem = 7;
-				item.pszText = sTemp;
+				item.pszText = sizeStr;
 				ListView_SetItem(hwdListCtrl, &item);
 
 				// Column 8: Used (calculate from filesystem)

@@ -105,12 +105,23 @@ void DrawPartitionView(HWND hWnd, HDC hdc, RECT* pRect)
 	// Clear background
 	FillRect(hdc, pRect, (HBRUSH)GetStockObject(WHITE_BRUSH));
 
-	// Draw drive label
+	// Draw drive label with total size
 	SetTextColor(hdc, RGB(0, 0, 0));
 	SetBkMode(hdc, TRANSPARENT);
 	RECT labelRect = *pRect;
 	labelRect.bottom = labelRect.top + 15;
-	DrawText(hdc, L"HD1:", -1, &labelRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+	
+	WCHAR driveLabel[64];
+	if(g_totalDiskSize > 0)
+	{
+		double totalSizeGB = (double)(g_totalDiskSize * 512) / (1024.0 * 1024.0 * 1024.0);
+		swprintf_s(driveLabel, 64, L"HD1:     Total Size: %.1f GB", totalSizeGB);
+	}
+	else
+	{
+		wcscpy_s(driveLabel, 64, L"HD1:");
+	}
+	DrawText(hdc, driveLabel, -1, &labelRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
 	// Adjust drawing area
 	RECT drawRect = *pRect;
@@ -168,16 +179,6 @@ void DrawPartitionView(HWND hWnd, HDC hdc, RECT* pRect)
 
 		currentX += partWidth + 2; // Small gap between partitions
 	}
-
-	// Draw size information
-	WCHAR sizeText[256];
-	wsprintf(sizeText, L"Total Size: %.1f GB", (double)(g_totalDiskSize * 512) / (1024.0 * 1024.0 * 1024.0));
-	RECT sizeRect = *pRect;
-	sizeRect.left = drawRect.right - 150;
-	sizeRect.top = pRect->top;
-	sizeRect.bottom = pRect->top + 15;
-	SetTextColor(hdc, RGB(0, 0, 0));
-	DrawText(hdc, sizeText, -1, &sizeRect, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
 }
 
 void PopulatePhysicalDriveComboBox(HWND hDlg, int controlId = 0)
