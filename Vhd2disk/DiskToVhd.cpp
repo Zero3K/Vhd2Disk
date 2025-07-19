@@ -142,11 +142,26 @@ BOOL CDiskToVhd::InitializeVhdStructures(UINT64 diskSize)
 	m_Foot.originalSize = _byteswap_uint64(diskSize);
 	m_Foot.currentSize = _byteswap_uint64(diskSize);
 	
-	// Set disk geometry (simplified)
-	UINT32 totalSectors = (UINT32)(diskSize / 512);
-	m_Foot.diskGeometry.cylinders = _byteswap_ushort((UINT16)(totalSectors / (16 * 63)));
-	m_Foot.diskGeometry.heads = 16;
-	m_Foot.diskGeometry.sectors = 63;
+	// Set disk geometry (handle large disks properly)
+	UINT64 totalSectors = diskSize / 512;
+	UINT32 sectorsPerTrack = 63;
+	UINT32 heads = 16;
+	UINT32 cylindersNeeded = (UINT32)(totalSectors / (heads * sectorsPerTrack));
+	
+	// VHD format uses 16-bit cylinders, so cap at maximum value
+	if(cylindersNeeded > 65535)
+	{
+		// For very large disks, use maximum CHS values
+		m_Foot.diskGeometry.cylinders = _byteswap_ushort(65535);
+		m_Foot.diskGeometry.heads = 16;
+		m_Foot.diskGeometry.sectors = 63;
+	}
+	else
+	{
+		m_Foot.diskGeometry.cylinders = _byteswap_ushort((UINT16)cylindersNeeded);
+		m_Foot.diskGeometry.heads = (UCHAR)heads;
+		m_Foot.diskGeometry.sectors = (UCHAR)sectorsPerTrack;
+	}
 	
 	m_Foot.diskType = _byteswap_ulong(3); // Dynamic disk
 	
@@ -331,9 +346,9 @@ BOOL CDiskToVhd::DumpDiskToVhdData(HWND hDlg)
 		bat[i] = 0xFFFFFFFF;
 	
 	// Calculate starting offset for data blocks (after headers and BAT)
-	UINT32 dataStartOffset = 1536 + (totalBlocks * 4);
+	UINT64 dataStartOffset = 1536 + ((UINT64)totalBlocks * 4);
 	dataStartOffset = (dataStartOffset + 511) & ~511; // Align to 512 bytes
-	UINT32 currentDataOffset = dataStartOffset;
+	UINT64 currentDataOffset = dataStartOffset;
 	
 	WCHAR statusMsg[256];
 	LARGE_INTEGER diskPos, vhdPos;
@@ -406,8 +421,19 @@ BOOL CDiskToVhd::DumpDiskToVhdData(HWND hDlg)
 				// Write block data
 				if(WriteFile(m_hVhdFile, diskBuffer, paddedSize, &bytesWritten, NULL) && bytesWritten == paddedSize)
 				{
-					// Update BAT entry
-					bat[blockIndex] = _byteswap_ulong(currentDataOffset / 512);
+					// Update BAT entry (ensure it fits in UINT32 for VHD format)
+					UINT64 sectorOffset = currentDataOffset / 512;
+					if(sectorOffset > UINT32_MAX)
+					{
+						// VHD format limitation reached
+						delete[] diskBuffer;
+						delete[] bitmapBuffer;
+						delete[] bat;
+						SendMessage(hDlg, MYWM_UPDATE_STATUS, (WPARAM)L"VHD file size limit exceeded (2TB maximum for dynamic VHDs).", 1);
+						return FALSE;
+					}
+					
+					bat[blockIndex] = _byteswap_ulong((UINT32)sectorOffset);
 					
 					// Advance data offset for next block
 					currentDataOffset += bitmapSize + paddedSize;
