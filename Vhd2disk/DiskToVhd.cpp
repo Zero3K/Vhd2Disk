@@ -328,6 +328,10 @@ BOOL CDiskToVhd::DumpDiskToVhdData(HWND hDlg)
 	UINT32 sectorsPerBlock = blockSize / 512;
 	UINT32 bitmapSize = (sectorsPerBlock / 8 + 511) & ~511; // Align to 512 bytes
 	
+	// Initialize timing for progress estimation
+	DWORD startTime = GetTickCount();
+	UINT64 totalDataProcessed = 0;
+	
 	// Allocate buffers for reading disk data and block bitmap
 	BYTE* diskBuffer = new BYTE[blockSize];
 	BYTE* bitmapBuffer = new BYTE[bitmapSize];
@@ -350,7 +354,6 @@ BOOL CDiskToVhd::DumpDiskToVhdData(HWND hDlg)
 	dataStartOffset = (dataStartOffset + 511) & ~511; // Align to 512 bytes
 	UINT64 currentDataOffset = dataStartOffset;
 	
-	WCHAR statusMsg[256];
 	LARGE_INTEGER diskPos, vhdPos;
 	DWORD bytesRead, bytesWritten;
 	
@@ -360,12 +363,54 @@ BOOL CDiskToVhd::DumpDiskToVhdData(HWND hDlg)
 		// Update progress
 		if(blockIndex % 10 == 0) // Update every 10 blocks to avoid too many UI updates
 		{
-			wsprintf(statusMsg, L"Processing block %d of %d (%d%% complete)...", 
-				blockIndex + 1, totalBlocks, (blockIndex * 100) / totalBlocks);
+			// Calculate progress and timing information
+			int progressPercent = (blockIndex * 100) / totalBlocks;
+			DWORD elapsedTime = GetTickCount() - startTime;
+			
+			WCHAR statusMsg[512];
+			WCHAR timeRemaining[128] = L"";
+			
+			// Calculate remaining time if we have meaningful progress
+			if(progressPercent > 0 && elapsedTime > 1000) // At least 1 second elapsed
+			{
+				DWORD estimatedTotalTime = (elapsedTime * 100) / progressPercent;
+				DWORD remainingTime = estimatedTotalTime - elapsedTime;
+				
+				// Convert to hours, minutes, seconds
+				DWORD hours = remainingTime / (1000 * 60 * 60);
+				DWORD minutes = (remainingTime % (1000 * 60 * 60)) / (1000 * 60);
+				DWORD seconds = (remainingTime % (1000 * 60)) / 1000;
+				
+				if(hours > 0)
+					wsprintf(timeRemaining, L", %d:%02d:%02d remaining", hours, minutes, seconds);
+				else if(minutes > 0)
+					wsprintf(timeRemaining, L", %d:%02d remaining", minutes, seconds);
+				else
+					wsprintf(timeRemaining, L", %d seconds remaining", seconds);
+			}
+			
+			// Format user-friendly message with data processed
+			UINT64 processedMB = totalDataProcessed / (1024 * 1024);
+			UINT64 totalMB = diskSize / (1024 * 1024);
+			
+			if(totalMB > 1024)
+			{
+				// Show in GB for large drives
+				UINT64 processedGB = processedMB / 1024;
+				UINT64 totalGB = totalMB / 1024;
+				wsprintf(statusMsg, L"Converting disk data... %d%% complete (%I64u GB of %I64u GB processed%s)", 
+					progressPercent, processedGB, totalGB, timeRemaining);
+			}
+			else
+			{
+				// Show in MB for smaller drives
+				wsprintf(statusMsg, L"Converting disk data... %d%% complete (%I64u MB of %I64u MB processed%s)", 
+					progressPercent, processedMB, totalMB, timeRemaining);
+			}
+			
 			SendMessage(hDlg, MYWM_UPDATE_STATUS, (WPARAM)statusMsg, 0);
 			
 			// Update progress bar
-			int progressPercent = (blockIndex * 100) / totalBlocks;
 			SendMessage(hDlg, MYWM_UPDATE_PROGRESSBAR, progressPercent, 0);
 		}
 		
@@ -382,6 +427,9 @@ BOOL CDiskToVhd::DumpDiskToVhdData(HWND hDlg)
 		
 		if(!ReadFile(m_hPhysicalDrive, diskBuffer, bytesToRead, &bytesRead, NULL) || bytesRead == 0)
 			continue; // Skip this block if read fails
+		
+		// Track total data processed for progress reporting
+		totalDataProcessed += bytesRead;
 		
 		// Check if block contains any non-zero data
 		BOOL isEmptyBlock = TRUE;
@@ -442,7 +490,7 @@ BOOL CDiskToVhd::DumpDiskToVhdData(HWND hDlg)
 		}
 	}
 	
-	SendMessage(hDlg, MYWM_UPDATE_STATUS, (WPARAM)L"Writing block allocation table...", 0);
+	SendMessage(hDlg, MYWM_UPDATE_STATUS, (WPARAM)L"Updating file allocation table...", 0);
 	
 	// Write updated BAT to VHD file
 	vhdPos.QuadPart = 1536; // BAT location
@@ -456,7 +504,7 @@ BOOL CDiskToVhd::DumpDiskToVhdData(HWND hDlg)
 		return FALSE;
 	}
 	
-	SendMessage(hDlg, MYWM_UPDATE_STATUS, (WPARAM)L"Finalizing VHD file...", 0);
+	SendMessage(hDlg, MYWM_UPDATE_STATUS, (WPARAM)L"Finalizing VHD file structure...", 0);
 	SendMessage(hDlg, MYWM_UPDATE_PROGRESSBAR, 100, 0);
 	
 	// Write final footer at end of file
