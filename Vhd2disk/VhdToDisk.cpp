@@ -1,6 +1,7 @@
 #include "StdAfx.h"
 #include "Trace.h"
 #include "VhdToDisk.h"
+#include "Vhd2disk.h"
 #include "resource.h"
 
 // Helper function to convert partition type to readable string
@@ -267,10 +268,6 @@ BOOL CVhdToDisk::ParseFirstSector(HWND hDlg)
 	ListView_DeleteAllItems(GetDlgItem(hDlg, IDC_LIST_VOLUME));
 
 	// Clear global partition data
-	extern PARTITION_INFO g_partitions[16];
-	extern int g_partitionCount;
-	extern UINT64 g_totalDiskSize;
-	
 	g_partitionCount = 0;
 	g_totalDiskSize = _byteswap_uint64(m_Foot.currentSize) / 512; // Total disk size in sectors
 

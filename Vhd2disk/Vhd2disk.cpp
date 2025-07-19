@@ -16,17 +16,6 @@ typedef struct _DUMPTHRDSTRUCT
 	BOOL bVhdToDisk; // TRUE for VHD->Disk, FALSE for Disk->VHD
 }DUMPTHRDSTRUCT;
 
-typedef struct _PARTITION_INFO
-{
-	UINT32 startLBA;
-	UINT32 sizeSectors;
-	BYTE partitionType;
-	WCHAR label[64];
-	WCHAR filesystem[32];
-	WCHAR size[32];
-	BOOL isBootable;
-}PARTITION_INFO;
-
 // Global partition information for drawing
 PARTITION_INFO g_partitions[16];
 int g_partitionCount = 0;
@@ -535,30 +524,30 @@ LRESULT CALLBACK MainDlgProc( HWND hDlg, UINT Msg, WPARAM wParam, LPARAM lParam 
 		break;
 
 	case MYWM_UPDATE_STATUS:
-
-		// Only update if the text has actually changed to reduce flicker
-		LPCWSTR newStatusText = (LPCWSTR)wParam;
-		if(wcscmp(g_lastStatusText, newStatusText) != 0)
 		{
-			wcscpy_s(g_lastStatusText, 512, newStatusText);
-			SetDlgItemText(hDlg, IDC_STATIC_STATUS, newStatusText);
-		}
+			// Only update if the text has actually changed to reduce flicker
+			LPCWSTR newStatusText = (LPCWSTR)wParam;
+			if(wcscmp(g_lastStatusText, newStatusText) != 0)
+			{
+				wcscpy_s(g_lastStatusText, 512, newStatusText);
+				SetDlgItemText(hDlg, IDC_STATIC_STATUS, newStatusText);
+			}
 
-		if(LOWORD(lParam) == 1)
-		{
-			EnableWindow(GetDlgItem(hDlg, IDC_BUTTON_START), TRUE);
-			EnableWindow(GetDlgItem(hDlg, IDC_BUTTON_BROWSE_VHD), TRUE);
-			EnableWindow(GetDlgItem(hDlg, IDC_BUTTON_BROWSE_VHD_SAVE), TRUE);
-			EnableWindow(GetDlgItem(hDlg, IDC_EDIT_VHD_FILE), TRUE);
-			EnableWindow(GetDlgItem(hDlg, IDC_EDIT_VHD_SAVE_FILE), TRUE);
-			EnableWindow(GetDlgItem(hDlg, IDC_COMBO1), TRUE);
-			EnableWindow(GetDlgItem(hDlg, IDC_RADIO_VHD_TO_DISK), TRUE);
-			EnableWindow(GetDlgItem(hDlg, IDC_RADIO_DISK_TO_VHD), TRUE);
-			
-			// Hide progress bar when operation completes
-			ShowWindow(GetDlgItem(hDlg, IDC_PROGRESS_DUMP), SW_HIDE);
+			if(LOWORD(lParam) == 1)
+			{
+				EnableWindow(GetDlgItem(hDlg, IDC_BUTTON_START), TRUE);
+				EnableWindow(GetDlgItem(hDlg, IDC_BUTTON_BROWSE_VHD), TRUE);
+				EnableWindow(GetDlgItem(hDlg, IDC_BUTTON_BROWSE_VHD_SAVE), TRUE);
+				EnableWindow(GetDlgItem(hDlg, IDC_EDIT_VHD_FILE), TRUE);
+				EnableWindow(GetDlgItem(hDlg, IDC_EDIT_VHD_SAVE_FILE), TRUE);
+				EnableWindow(GetDlgItem(hDlg, IDC_COMBO1), TRUE);
+				EnableWindow(GetDlgItem(hDlg, IDC_RADIO_VHD_TO_DISK), TRUE);
+				EnableWindow(GetDlgItem(hDlg, IDC_RADIO_DISK_TO_VHD), TRUE);
+				
+				// Hide progress bar when operation completes
+				ShowWindow(GetDlgItem(hDlg, IDC_PROGRESS_DUMP), SW_HIDE);
+			}
 		}
-
 		return TRUE;
 
 	case MYWM_UPDATE_PROGRESSBAR:
