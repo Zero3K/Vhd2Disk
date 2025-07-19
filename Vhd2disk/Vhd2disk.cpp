@@ -16,6 +16,22 @@ typedef struct _DUMPTHRDSTRUCT
 	BOOL bVhdToDisk; // TRUE for VHD->Disk, FALSE for Disk->VHD
 }DUMPTHRDSTRUCT;
 
+typedef struct _PARTITION_INFO
+{
+	UINT32 startLBA;
+	UINT32 sizeSectors;
+	BYTE partitionType;
+	WCHAR label[64];
+	WCHAR filesystem[32];
+	WCHAR size[32];
+	BOOL isBootable;
+}PARTITION_INFO;
+
+// Global partition information for drawing
+PARTITION_INFO g_partitions[16];
+int g_partitionCount = 0;
+UINT64 g_totalDiskSize = 0;
+
 LRESULT CALLBACK MainDlgProc( HWND hDlg, UINT Msg, WPARAM wParam, LPARAM lParam );
 
 HINSTANCE hInst;
@@ -71,6 +87,109 @@ BOOL DoSaveFileDialog(LPWSTR lpszFilename, LPWSTR lpzFilter, LPWSTR lpzExtension
 
 	return GetSaveFileName(&ofn); 
 } 
+
+// Function to draw the partition visualization
+void DrawPartitionView(HWND hWnd, HDC hdc, RECT* pRect)
+{
+	if(g_partitionCount == 0 || g_totalDiskSize == 0)
+	{
+		// Draw "No partitions" message
+		SetTextColor(hdc, RGB(128, 128, 128));
+		SetBkMode(hdc, TRANSPARENT);
+		DrawText(hdc, L"No partition information available", -1, pRect, 
+			DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+		return;
+	}
+
+	// Colors for different partition types
+	COLORREF colors[] = {
+		RGB(0, 102, 204),    // Blue for NTFS
+		RGB(255, 153, 0),    // Orange for FAT32
+		RGB(0, 153, 76),     // Green for Linux
+		RGB(153, 51, 255),   // Purple for Extended
+		RGB(255, 51, 51),    // Red for System
+		RGB(102, 204, 255),  // Light Blue for Data
+		RGB(255, 204, 153),  // Light Orange for Others
+		RGB(204, 204, 204)   // Gray for Unknown
+	};
+
+	// Clear background
+	FillRect(hdc, pRect, (HBRUSH)GetStockObject(WHITE_BRUSH));
+
+	// Draw drive label
+	SetTextColor(hdc, RGB(0, 0, 0));
+	SetBkMode(hdc, TRANSPARENT);
+	RECT labelRect = *pRect;
+	labelRect.bottom = labelRect.top + 15;
+	DrawText(hdc, L"HD1:", -1, &labelRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+	// Adjust drawing area
+	RECT drawRect = *pRect;
+	drawRect.top += 20;
+	drawRect.left += 30;
+	drawRect.right -= 10;
+	drawRect.bottom -= 5;
+
+	int totalWidth = drawRect.right - drawRect.left;
+	int currentX = drawRect.left;
+
+	// Draw each partition
+	for(int i = 0; i < g_partitionCount; i++)
+	{
+		PARTITION_INFO* pPart = &g_partitions[i];
+		
+		// Calculate partition width based on size
+		double ratio = (double)pPart->sizeSectors / (double)g_totalDiskSize;
+		int partWidth = (int)(totalWidth * ratio);
+		if(partWidth < 10) partWidth = 10; // Minimum width for visibility
+
+		// Select color based on partition type
+		COLORREF partColor = colors[i % (sizeof(colors) / sizeof(colors[0]))];
+		if(pPart->partitionType == 0x07) partColor = RGB(0, 102, 204);      // NTFS - Blue
+		else if(pPart->partitionType == 0x0B || pPart->partitionType == 0x0C) partColor = RGB(255, 153, 0); // FAT32 - Orange
+		else if(pPart->partitionType == 0x83) partColor = RGB(0, 153, 76);   // Linux - Green
+		else if(pPart->partitionType == 0x05 || pPart->partitionType == 0x0F) partColor = RGB(153, 51, 255); // Extended - Purple
+
+		// Create brush and draw partition rectangle
+		HBRUSH hBrush = CreateSolidBrush(partColor);
+		HBRUSH hOldBrush = (HBRUSH)SelectObject(hdc, hBrush);
+		
+		RECT partRect = {currentX, drawRect.top, currentX + partWidth, drawRect.bottom};
+		FillRect(hdc, &partRect, hBrush);
+		
+		// Draw border
+		HPEN hPen = CreatePen(PS_SOLID, 1, RGB(64, 64, 64));
+		HPEN hOldPen = (HPEN)SelectObject(hdc, hPen);
+		Rectangle(hdc, partRect.left, partRect.top, partRect.right, partRect.bottom);
+		
+		// Draw partition label if there's space
+		if(partWidth > 40)
+		{
+			SetTextColor(hdc, RGB(255, 255, 255));
+			SetBkMode(hdc, TRANSPARENT);
+			WCHAR labelText[64];
+			wsprintf(labelText, L"P%d", i + 1);
+			DrawText(hdc, labelText, -1, &partRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+		}
+
+		SelectObject(hdc, hOldPen);
+		SelectObject(hdc, hOldBrush);
+		DeleteObject(hPen);
+		DeleteObject(hBrush);
+
+		currentX += partWidth + 2; // Small gap between partitions
+	}
+
+	// Draw size information
+	WCHAR sizeText[256];
+	wsprintf(sizeText, L"Total Size: %.1f GB", (double)(g_totalDiskSize * 512) / (1024.0 * 1024.0 * 1024.0));
+	RECT sizeRect = *pRect;
+	sizeRect.left = drawRect.right - 150;
+	sizeRect.top = pRect->top;
+	sizeRect.bottom = pRect->top + 15;
+	SetTextColor(hdc, RGB(0, 0, 0));
+	DrawText(hdc, sizeText, -1, &sizeRect, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+}
 
 void PopulatePhysicalDriveComboBox(HWND hDlg)
 {
@@ -137,34 +256,64 @@ void AddListHeader(HWND hDlg)
 		(hListCtrl, LVS_EX_CHECKBOXES | LVS_EX_FULLROWSELECT | LVS_EX_HEADERDRAGDROP);
 
 	col.mask = LVCF_TEXT | LVCF_WIDTH;
-	col.pszText = L"Boot";
+	col.pszText = L"Drive";
 	col.fmt = LVCFMT_LEFT;
 	col.cx = 40;
 	ListView_InsertColumn(hListCtrl, 0, &col);
 
 	col.mask = LVCF_TEXT | LVCF_WIDTH;
-	col.pszText = L"Type";
+	col.pszText = L"HD";
 	col.fmt = LVCFMT_LEFT;
-	col.cx = 40;
+	col.cx = 30;
 	ListView_InsertColumn(hListCtrl, 1, &col);
 
 	col.mask = LVCF_TEXT | LVCF_WIDTH;
-	col.pszText = L"Size (in sectors)";
+	col.pszText = L"PartNo";
 	col.fmt = LVCFMT_LEFT;
-	col.cx = 90;
+	col.cx = 50;
 	ListView_InsertColumn(hListCtrl, 2, &col);
 
 	col.mask = LVCF_TEXT | LVCF_WIDTH;
-	col.pszText = L"C.H.S. first sector";
+	col.pszText = L"PartStart";
 	col.fmt = LVCFMT_LEFT;
-	col.cx = 100;
+	col.cx = 70;
 	ListView_InsertColumn(hListCtrl, 3, &col);
 
 	col.mask = LVCF_TEXT | LVCF_WIDTH;
-	col.pszText = L"C.H.S. last sector";
+	col.pszText = L"PartSize";
 	col.fmt = LVCFMT_LEFT;
-	col.cx = 100;
+	col.cx = 70;
 	ListView_InsertColumn(hListCtrl, 4, &col);
+
+	col.mask = LVCF_TEXT | LVCF_WIDTH;
+	col.pszText = L"Label";
+	col.fmt = LVCFMT_LEFT;
+	col.cx = 80;
+	ListView_InsertColumn(hListCtrl, 5, &col);
+
+	col.mask = LVCF_TEXT | LVCF_WIDTH;
+	col.pszText = L"Filesystem";
+	col.fmt = LVCFMT_LEFT;
+	col.cx = 80;
+	ListView_InsertColumn(hListCtrl, 6, &col);
+
+	col.mask = LVCF_TEXT | LVCF_WIDTH;
+	col.pszText = L"Size";
+	col.fmt = LVCFMT_LEFT;
+	col.cx = 70;
+	ListView_InsertColumn(hListCtrl, 7, &col);
+
+	col.mask = LVCF_TEXT | LVCF_WIDTH;
+	col.pszText = L"Used";
+	col.fmt = LVCFMT_LEFT;
+	col.cx = 70;
+	ListView_InsertColumn(hListCtrl, 8, &col);
+
+	col.mask = LVCF_TEXT | LVCF_WIDTH;
+	col.pszText = L"Free";
+	col.fmt = LVCFMT_LEFT;
+	col.cx = 70;
+	ListView_InsertColumn(hListCtrl, 9, &col);
 }
 
 int WINAPI WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nShowCmd )
@@ -373,6 +522,17 @@ LRESULT CALLBACK MainDlgProc( HWND hDlg, UINT Msg, WPARAM wParam, LPARAM lParam 
 	case WM_SIZING:
 
 		return TRUE;
+
+	case WM_DRAWITEM:
+		{
+			DRAWITEMSTRUCT* pDIS = (DRAWITEMSTRUCT*)lParam;
+			if(pDIS && pDIS->CtlID == IDC_STATIC_PARTITION_VIEW)
+			{
+				DrawPartitionView(pDIS->hwndItem, pDIS->hDC, &pDIS->rcItem);
+				return TRUE;
+			}
+		}
+		break;
 
 	case MYWM_UPDATE_STATUS:
 
