@@ -423,7 +423,7 @@ BOOL CDiskToVhd::DumpDiskToVhdData(HWND hDlg)
 				{
 					// Update BAT entry (ensure it fits in UINT32 for VHD format)
 					UINT64 sectorOffset = currentDataOffset / 512;
-					if(sectorOffset > UINT32_MAX)
+					if(sectorOffset > 0xFFFFFFFF)
 					{
 						// VHD format limitation reached
 						delete[] diskBuffer;
