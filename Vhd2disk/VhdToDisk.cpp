@@ -643,7 +643,6 @@ clean:
 
 	return bReturn;
 }
-}
 
 BOOL CVhdToDisk::Dump(HWND phWnd)
 {
